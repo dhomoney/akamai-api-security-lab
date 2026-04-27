@@ -1,0 +1,37 @@
+---
+# Kong OSS is deployed as an ECS task (dbless mode).
+# This role performs post-deployment API configuration via the Kong Admin API.
+
+- name: Wait for Kong Admin API to be available
+  ansible.builtin.uri:
+    url: "{{ kong_admin_url }}/status"
+    method: GET
+    status_code: 200
+  register: kong_status
+  retries: 20
+  delay: 10
+  until: kong_status.status == 200
+  delegate_to: localhost
+
+- name: Create sample service in Kong
+  ansible.builtin.uri:
+    url: "{{ kong_admin_url }}/services"
+    method: POST
+    body_format: json
+    body:
+      name: sample-service
+      url: "http://httpbin.org"
+    status_code: [201, 409]
+  delegate_to: localhost
+
+- name: Create route for sample service
+  ansible.builtin.uri:
+    url: "{{ kong_admin_url }}/services/sample-service/routes"
+    method: POST
+    body_format: json
+    body:
+      name: sample-route
+      paths:
+        - /sample
+    status_code: [201, 409]
+  delegate_to: localhost

@@ -1,0 +1,29 @@
+---
+# MuleSoft Mule Runtime configuration.
+# Requires vault_anypoint_client_id and vault_anypoint_client_secret to be set.
+# TODO: Complete once Anypoint Platform org/license details are confirmed.
+
+- name: Verify MuleSoft runtime is responding
+  ansible.builtin.uri:
+    url: "{{ mulesoft_api_url }}/api/health"
+    method: GET
+    status_code: [200, 503]
+  register: mule_health
+  retries: 20
+  delay: 15
+  until: mule_health.status in [200, 503]
+  delegate_to: localhost
+
+- name: Register runtime with Anypoint Platform
+  ansible.builtin.uri:
+    url: "https://anypoint.mulesoft.com/hybrid/api/v1/servers"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ anypoint_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ project_name }}-lab-runtime"
+    status_code: [201, 409]
+  delegate_to: localhost
+  when: anypoint_token is defined

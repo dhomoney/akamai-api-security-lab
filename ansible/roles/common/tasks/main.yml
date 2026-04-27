@@ -1,0 +1,27 @@
+---
+- name: Update all packages
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    update_cache: true
+
+- name: Install common utilities
+  ansible.builtin.dnf:
+    name:
+      - jq
+      - curl
+      - wget
+      - unzip
+      - python3
+      - python3-pip
+    state: present
+
+- name: Configure system limits for container workloads
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop:
+    - { name: "net.core.somaxconn", value: "65535" }
+    - { name: "vm.max_map_count", value: "262144" }

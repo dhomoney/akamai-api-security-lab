@@ -1,0 +1,16 @@
+variable "project_name"       { type = string }
+variable "cluster_id"         { type = string }
+variable "cluster_name"       { type = string }
+variable "vpc_id"             { type = string }
+variable "private_subnet_ids" { type = list(string) }
+variable "public_subnet_ids"  { type = list(string) }
+variable "task_sg_id"         { type = string }
+variable "alb_sg_id"          { type = string }
+variable "capacity_provider"  { type = string }
+variable "tags"               { type = map(string); default = {} }
+
+variable "mule_image" {
+  description = "Mule Runtime Docker image URI (push to ECR after building)"
+  type        = string
+  default     = "mulesoft/mule-enterprise-standalone:latest"
+}

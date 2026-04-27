@@ -1,0 +1,61 @@
+---
+# Configures gateway integrations in the Noname SaaS tenant via the Noname API.
+# All tasks run from localhost using the Noname REST API.
+# Credentials come from vault: vault_noname_tenant_url, vault_noname_api_key.
+
+- name: Verify Noname SaaS tenant is reachable
+  ansible.builtin.uri:
+    url: "{{ vault_noname_tenant_url }}/api/v1/health"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ vault_noname_api_key }}"
+    status_code: 200
+  register: noname_health
+  retries: 5
+  delay: 10
+  until: noname_health.status == 200
+
+- name: Register Kong integration with Noname
+  ansible.builtin.uri:
+    url: "{{ vault_noname_tenant_url }}/api/v1/integrations"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ vault_noname_api_key }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      type: "kong"
+      name: "lab-kong"
+      config:
+        admin_url: "{{ kong_admin_url }}"
+    status_code: [200, 201, 409]
+
+- name: Register NGINX integration with Noname
+  ansible.builtin.uri:
+    url: "{{ vault_noname_tenant_url }}/api/v1/integrations"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ vault_noname_api_key }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      type: "nginx"
+      name: "lab-nginx"
+      config:
+        status_url: "{{ nginx_status_url }}"
+    status_code: [200, 201, 409]
+
+- name: Register MuleSoft integration with Noname
+  ansible.builtin.uri:
+    url: "{{ vault_noname_tenant_url }}/api/v1/integrations"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ vault_noname_api_key }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      type: "mulesoft"
+      name: "lab-mulesoft"
+      config:
+        api_url: "{{ mulesoft_api_url }}"
+    status_code: [200, 201, 409]

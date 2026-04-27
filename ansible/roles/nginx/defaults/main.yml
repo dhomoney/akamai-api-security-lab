@@ -1,0 +1,2 @@
+---
+nginx_health_url: "http://localhost:8080"

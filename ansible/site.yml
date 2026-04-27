@@ -1,0 +1,38 @@
+---
+- name: Load vault
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Include vault variables
+      ansible.builtin.include_vars:
+        file: vault.yml
+
+- name: Apply common configuration to all ECS nodes
+  hosts: all
+  become: true
+  roles:
+    - common
+
+- name: Configure Kong OSS integration
+  hosts: all
+  gather_facts: false
+  roles:
+    - kong
+
+- name: Configure NGINX OSS
+  hosts: all
+  gather_facts: false
+  roles:
+    - nginx
+
+- name: Configure MuleSoft runtime
+  hosts: all
+  gather_facts: false
+  roles:
+    - mulesoft
+
+- name: Configure Noname gateway integrations
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - noname_integration

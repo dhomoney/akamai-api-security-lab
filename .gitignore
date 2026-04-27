@@ -1,0 +1,44 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl
+terraform/terraform.tfvars
+!terraform/terraform.tfvars.example
+
+# Ansible
+*.retry
+ansible/vault.yml
+!ansible/vault.yml.example
+
+# SSH Keys
+keys/
+*.pem
+*.key
+!*.key.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# OS
+.DS_Store
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Credentials — never commit these
+aws_keys.txt
+*.credentials
+.aws/
+
+# Claude Code local settings
+.claude/settings.local.json

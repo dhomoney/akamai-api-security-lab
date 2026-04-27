@@ -1,0 +1,7 @@
+project_name       = "akamai-lab"
+aws_region         = "us-east-2"
+aws_profile        = "default"       # AWS CLI profile with Akamai SA credentials
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["us-east-2a", "us-east-2b"]
+admin_cidr         = "YOUR_IP/32"    # e.g. "203.0.113.5/32" — restricts SSH + admin API access
+instance_type      = "t3.small"
