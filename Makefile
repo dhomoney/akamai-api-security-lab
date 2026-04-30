@@ -3,17 +3,19 @@ TF_DIR       := terraform
 ANSIBLE_DIR  := ansible
 KEYS_DIR     := keys
 VENV         := .venv
-PY           := $(VENV)/bin/python
-PIP          := $(VENV)/bin/pip
-AP           := $(VENV)/bin/ansible-playbook
-AG           := $(VENV)/bin/ansible-galaxy
-AL           := $(VENV)/bin/ansible-lint
-AV           := $(VENV)/bin/ansible-vault
+VENV_ABS     := $(abspath $(VENV))
+PY           := $(VENV_ABS)/bin/python
+PIP          := $(VENV_ABS)/bin/pip
+AP           := $(VENV_ABS)/bin/ansible-playbook
+AG           := $(VENV_ABS)/bin/ansible-galaxy
+AL           := $(VENV_ABS)/bin/ansible-lint
+AV           := $(VENV_ABS)/bin/ansible-vault
 VAULT_PASS   := ~/.vault_pass
+AWS_PROFILE  ?= SA_Standard_Access-491489166083
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install-terraform keys init plan apply provision deploy destroy \
-        lint lint-tf lint-ansible vault-edit vault-create clean
+.PHONY: help setup install-terraform keys init plan apply provision provision-check deploy destroy \
+        lint lint-tf lint-ansible vault-init vault-create vault-edit clean _tf_outputs _ssh_cfg _my_ip
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -49,43 +51,81 @@ keys: ## Generate ED25519 SSH keypair for lab instances
 
 # ── Terraform ──────────────────────────────────────────────────────────────────
 
+_my_ip:
+	$(eval MY_IP := $(shell curl -sf --max-time 5 https://ifconfig.me || curl -sf --max-time 5 https://api.ipify.org || curl -sf --max-time 5 https://checkip.amazonaws.com | tr -d '[:space:]'))
+	@[ -n "$(MY_IP)" ] || (echo "ERROR: Could not detect public IP"; exit 1)
+	@echo "  Using admin_cidr: $(MY_IP)/32"
+
 init: ## Terraform init
 	cd $(TF_DIR) && terraform init
 
-plan: ## Terraform plan (requires terraform.tfvars)
-	cd $(TF_DIR) && terraform plan -var-file="terraform.tfvars"
+plan: _my_ip ## Terraform plan (requires terraform.tfvars)
+	cd $(TF_DIR) && terraform plan -var-file="terraform.tfvars" -var "admin_cidr=$(MY_IP)/32"
 
-apply: ## Terraform apply
-	cd $(TF_DIR) && terraform apply -var-file="terraform.tfvars" -auto-approve
+apply: _my_ip ## Terraform apply (auto-detects current public IP for admin_cidr)
+	cd $(TF_DIR) && terraform apply -var-file="terraform.tfvars" -var "admin_cidr=$(MY_IP)/32" -auto-approve
 
-destroy: ## Tear down all infrastructure (DESTRUCTIVE)
-	cd $(TF_DIR) && terraform destroy -var-file="terraform.tfvars" -auto-approve
+destroy: _my_ip ## Tear down all infrastructure (DESTRUCTIVE)
+	cd $(TF_DIR) && terraform destroy -var-file="terraform.tfvars" -var "admin_cidr=$(MY_IP)/32" -auto-approve
 
 # ── Ansible ────────────────────────────────────────────────────────────────────
 
-provision: ## Run Ansible playbooks against live infrastructure
-	cd $(ANSIBLE_DIR) && \
-		AWS_PROFILE=$(AWS_PROFILE) $(AP) site.yml \
-		--vault-password-file $(VAULT_PASS) \
-		--private-key ../$(KEYS_DIR)/lab_key
+_tf_outputs:
+	$(eval BASTION_IP    := $(shell cd $(TF_DIR) && terraform output -raw bastion_public_ip 2>/dev/null))
+	$(eval APPS_ALB_DNS  := $(shell cd $(TF_DIR) && terraform output -raw apps_alb_dns 2>/dev/null))
+	$(eval KONG_ADMIN_URL := $(shell cd $(TF_DIR) && terraform output -raw kong_admin_url 2>/dev/null))
+	$(eval NGINX_ALB_DNS := $(shell cd $(TF_DIR) && terraform output -raw nginx_alb_dns 2>/dev/null))
+	@if [ -z "$(BASTION_IP)" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make apply' first."; exit 1; fi
 
-provision-check: ## Dry-run Ansible (--check mode)
+_ssh_cfg: _tf_outputs
+	@rm -f /tmp/ansible-ssh-* 2>/dev/null; true
+	@printf 'Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile /dev/null\n\tIdentityFile $(CURDIR)/$(KEYS_DIR)/lab_key\n\nHost 10.0.*.*\n\tProxyJump ec2-user@$(BASTION_IP)\n' > /tmp/lab-ssh.cfg
+
+provision: _ssh_cfg ## Run Ansible playbooks against live infrastructure
 	cd $(ANSIBLE_DIR) && \
 		AWS_PROFILE=$(AWS_PROFILE) $(AP) site.yml \
 		--vault-password-file $(VAULT_PASS) \
 		--private-key ../$(KEYS_DIR)/lab_key \
+		--ssh-common-args="-F /tmp/lab-ssh.cfg" \
+		--extra-vars "apps_alb_dns=$(APPS_ALB_DNS) kong_admin_url=$(KONG_ADMIN_URL) nginx_alb_dns=$(NGINX_ALB_DNS)"
+
+provision-check: _ssh_cfg ## Dry-run Ansible (--check mode)
+	cd $(ANSIBLE_DIR) && \
+		AWS_PROFILE=$(AWS_PROFILE) $(AP) site.yml \
+		--vault-password-file $(VAULT_PASS) \
+		--private-key ../$(KEYS_DIR)/lab_key \
+		--ssh-common-args="-F /tmp/lab-ssh.cfg" \
+		--extra-vars "apps_alb_dns=$(APPS_ALB_DNS) kong_admin_url=$(KONG_ADMIN_URL) nginx_alb_dns=$(NGINX_ALB_DNS)" \
 		--check --diff
 
-vault-create: ## Create ansible/vault.yml from example and encrypt it
-	@if [ -f $(ANSIBLE_DIR)/vault.yml ]; then \
-		echo "ansible/vault.yml already exists. Use make vault-edit to modify it."; \
+vault-init: ## Create ~/.vault_pass with a random password (run once, keep it safe)
+	@if [ -f $(VAULT_PASS) ]; then \
+		echo "$(VAULT_PASS) already exists — skipping."; \
 	else \
-		cp $(ANSIBLE_DIR)/vault.yml.example $(ANSIBLE_DIR)/vault.yml; \
-		$(AV) encrypt $(ANSIBLE_DIR)/vault.yml --vault-password-file $(VAULT_PASS); \
+		python3 -c "import secrets, string; print(secrets.token_urlsafe(32))" > $(VAULT_PASS); \
+		chmod 600 $(VAULT_PASS); \
+		echo "Created $(VAULT_PASS) — back this up somewhere safe (password manager)."; \
+		echo "Password: $$(cat $(VAULT_PASS))"; \
+	fi
+
+vault-create: vault-init ## Create ansible/vault.yml from example and encrypt it
+	@if [ -f $(ANSIBLE_DIR)/vault.yml ]; then \
+		if head -1 $(ANSIBLE_DIR)/vault.yml | grep -q '^\$$ANSIBLE_VAULT'; then \
+			echo "ansible/vault.yml already exists and is encrypted. Use make vault-edit."; \
+		else \
+			echo "ansible/vault.yml exists but is NOT encrypted. Encrypting now..."; \
+			$(AV) encrypt $(ANSIBLE_DIR)/vault.yml --vault-password-file $(VAULT_PASS) && \
+			echo "ansible/vault.yml is now encrypted."; \
+		fi \
+	else \
+		cp $(ANSIBLE_DIR)/vault.yml.example $(ANSIBLE_DIR)/vault.yml && \
+		$(AV) encrypt $(ANSIBLE_DIR)/vault.yml --vault-password-file $(VAULT_PASS) && \
 		echo "ansible/vault.yml created and encrypted."; \
 	fi
 
 vault-edit: ## Edit encrypted ansible/vault.yml
+	@[ -f $(VAULT_PASS) ] || (echo "Run 'make vault-init' first."; exit 1)
 	$(AV) edit $(ANSIBLE_DIR)/vault.yml --vault-password-file $(VAULT_PASS)
 
 # ── Full lifecycle ─────────────────────────────────────────────────────────────

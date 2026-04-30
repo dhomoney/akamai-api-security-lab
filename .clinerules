@@ -1,8 +1,4 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project Purpose
+# Akamai API Security Lab Environment
 
 Repeatable lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform and configures it via Ansible. Kong OSS and NGINX OSS gateways run and are integrated with a pre-provisioned Noname SaaS tenant. MuleSoft is provisioned in Terraform but disabled in Ansible until a Docker image is available.
 
@@ -72,8 +68,8 @@ ansible/
     common/                # OS updates, system limits for container workloads
     kong/                  # Kong Admin API: creates sample service + route
     nginx/                 # Verifies NGINX ALB is reachable from localhost
-    mulesoft/              # Registers runtime with Anypoint Platform
-    noname_integration/    # Registers Kong/NGINX/MuleSoft integrations via Noname API
+    mulesoft/              # Registers runtime with Anypoint Platform (disabled)
+    noname_integration/    # Registers Kong/NGINX integrations via Noname API
 
 .github/workflows/
   lint.yml                 # PR/push: terraform fmt+validate+tflint, ansible-lint
@@ -93,7 +89,7 @@ EC2 launch type (not Fargate) so that Ansible can SSH into the underlying nodes 
 Kong runs in declarative (`KONG_DATABASE=off`) mode. No Postgres. The Ansible `kong` role configures routes/services via the Admin API (port 8001) after deployment. The Admin API port is restricted to `admin_cidr` in the security group.
 
 ### Noname sensor integration
-The Noname sensor ECS task reads its tenant URL and API key from SSM SecureString parameters (populated by Terraform from `noname_sensor_image`, `noname_tenant_url`, `noname_api_key` variables). The `noname_integration` Ansible role authenticates via `POST /auth/token` (service account `client_id`/`client_secret` → `accessToken` JWT), fetches the engine ID from `GET /api/v3/engines`, then registers Kong (`POST /api/v3/sources/kong`) and NGINX (`POST /api/v3/sources/nginx`) as traffic source integrations. All API calls run from localhost.
+The Noname sensor ECS task reads its tenant URL and API key from SSM SecureString parameters (populated by Terraform from `noname_sensor_image`, `noname_tenant_url`, `noname_api_key` variables). The `noname_integration` Ansible role authenticates via `POST /auth/token` (service account `client_id`/`client_secret` → `accessToken` JWT), fetches the engine ID from `GET /api/v3/engines` (response key: `entities[0].id`), then registers Kong (`POST /api/v3/sources/kong`) and NGINX (`POST /api/v3/sources/nginx`) as traffic source integrations. All API calls run from localhost.
 
 ### Secrets flow
 - Terraform: Noname credentials go into `terraform.tfvars` (gitignored) and land in SSM SecureString.
@@ -106,11 +102,12 @@ The Noname sensor ECS task reads its tenant URL and API key from SSM SecureStrin
 - **MuleSoft Anypoint license**: Ansible `mulesoft` role's Anypoint registration step requires `vault_anypoint_client_id` and a valid license key in vault.
 - **HTTPS / TLS**: ALB listeners are HTTP only. Add ACM certificate + HTTPS listeners for any scenario requiring TLS-in-transit testing.
 
-## Ansible Implementation Notes
+## Ansible Implementation Notes — Do Not Regress These
 
-- `ansible.cfg` disables ControlMaster (`ControlMaster=no`) to avoid stale SSH socket errors when going through the bastion. `pipelining = True` keeps performance acceptable.
-- The common play uses `serial: 1` to avoid overloading the bastion with parallel ProxyJump connections.
-- The ECS AMI ships `curl-minimal` — do not install `curl` via DNF (conflict). Use `uri` module for HTTP tasks instead.
-- The `pixi` vulnerable app uses `mccutchen/go-httpbin:latest` (the canonical 42crunch pixi image is not publicly available).
-- Noname integration engine ID is fetched dynamically via `GET /api/v3/engines` — no vault variable needed for it.
-- The `nginx` role runs on `localhost` and checks the NGINX ALB (not the ECS node directly); `nginx_alb_dns` is passed as an extra-var from Terraform output.
+- **SSH**: `ansible.cfg` sets `ControlMaster=no` to avoid stale socket errors through the bastion. `pipelining=True` keeps performance acceptable. Do not re-enable ControlMaster.
+- **Serial**: The common play uses `serial: 1` to avoid overloading the bastion with parallel ProxyJump connections. Do not remove this.
+- **curl conflict**: The ECS AMI ships `curl-minimal` — do not add `curl` to any DNF package list (it will conflict). Use the `ansible.builtin.uri` module for all HTTP tasks.
+- **pixi app**: Uses `mccutchen/go-httpbin:latest`. The 42crunch pixi image is not publicly available — do not try to switch back.
+- **NGINX role**: Runs on `localhost` and checks the NGINX ALB DNS name. It does not SSH to ECS nodes. The `nginx_alb_dns` var comes from a Terraform output passed as an extra-var.
+- **Noname engine ID**: Fetched dynamically from `GET /api/v3/engines` at provision time. No vault variable is needed for this.
+- **Docker Compose files**: No `version:` key in any compose file — it is obsolete in modern Docker and generates warnings.

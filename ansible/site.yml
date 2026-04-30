@@ -8,28 +8,37 @@
         file: vault.yml
 
 - name: Apply common configuration to all ECS nodes
-  hosts: all
+  hosts: role_ecs_node
   become: true
+  serial: 1
   roles:
     - common
 
-- name: Configure Kong OSS integration
-  hosts: all
+- name: Deploy vulnerable apps on apps host
+  hosts: role_apps
+  become: true
+  roles:
+    - vulnerable_apps
+
+- name: Configure Kong OSS gateway and routes
+  hosts: localhost
   gather_facts: false
   roles:
     - kong
 
-- name: Configure NGINX OSS
-  hosts: all
+- name: Verify NGINX OSS gateway
+  hosts: localhost
   gather_facts: false
   roles:
     - nginx
 
-- name: Configure MuleSoft runtime
-  hosts: all
-  gather_facts: false
-  roles:
-    - mulesoft
+# MuleSoft play is disabled — no public image available yet; see CLAUDE.md Known TODOs.
+# Uncomment once mule_image is configured in terraform.tfvars.
+# - name: Configure MuleSoft runtime
+#   hosts: localhost
+#   gather_facts: false
+#   roles:
+#     - mulesoft
 
 - name: Configure Noname gateway integrations
   hosts: localhost

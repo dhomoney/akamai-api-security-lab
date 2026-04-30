@@ -1,3 +1,2 @@
 ---
-nginx_alb_dns: "localhost"
 apps_alb_dns: "localhost"

@@ -1,0 +1,7 @@
+services:
+  pixi:
+    image: mccutchen/go-httpbin:latest
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    mem_limit: 128m

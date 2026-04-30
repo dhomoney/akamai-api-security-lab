@@ -1,0 +1,29 @@
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: vapi
+      MYSQL_USER: vapi
+      MYSQL_PASSWORD: vapisecret
+      MYSQL_ROOT_PASSWORD: rootsecret
+    volumes:
+      - vapi-mysql:/var/lib/mysql
+    mem_limit: 256m
+
+  vapi:
+    image: roottusk/vapi:latest
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    depends_on:
+      - mysql
+    environment:
+      DB_HOST: mysql
+      DB_DATABASE: vapi
+      DB_USERNAME: vapi
+      DB_PASSWORD: vapisecret
+    mem_limit: 256m
+
+volumes:
+  vapi-mysql:

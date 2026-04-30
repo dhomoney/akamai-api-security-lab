@@ -1,61 +1,85 @@
 ---
-# Configures gateway integrations in the Noname SaaS tenant via the Noname API.
-# All tasks run from localhost using the Noname REST API.
-# Credentials come from vault: vault_noname_tenant_url, vault_noname_api_key.
+# Configures gateway integrations in the Noname SaaS tenant via the Noname REST API.
+# All tasks run from localhost.
+# Credentials come from vault: vault_noname_tenant_url, vault_noname_client_id, vault_noname_client_secret.
 
-- name: Verify Noname SaaS tenant is reachable
-  ansible.builtin.uri:
-    url: "{{ vault_noname_tenant_url }}/api/v1/health"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ vault_noname_api_key }}"
-    status_code: 200
-  register: noname_health
-  retries: 5
-  delay: 10
-  until: noname_health.status == 200
+- name: Skip Noname integration — credentials not configured
+  ansible.builtin.debug:
+    msg: "Noname credentials not set in vault.yml — run 'make vault-edit' to configure. Skipping."
+  when: vault_noname_client_id == "" or vault_noname_client_secret == "" or vault_noname_tenant_url == ""
 
-- name: Register Kong integration with Noname
-  ansible.builtin.uri:
-    url: "{{ vault_noname_tenant_url }}/api/v1/integrations"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ vault_noname_api_key }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      type: "kong"
-      name: "lab-kong"
-      config:
-        admin_url: "{{ kong_admin_url }}"
-    status_code: [200, 201, 409]
+- name: Noname integration block
+  when: vault_noname_client_id != "" and vault_noname_client_secret != "" and vault_noname_tenant_url != ""
+  block:
+    - name: Obtain Noname API access token
+      ansible.builtin.uri:
+        url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/auth/token"
+        method: POST
+        body_format: json
+        body:
+          client_id: "{{ vault_noname_client_id }}"
+          client_secret: "{{ vault_noname_client_secret }}"
+        status_code: [200, 201]
+      register: noname_token_response
 
-- name: Register NGINX integration with Noname
-  ansible.builtin.uri:
-    url: "{{ vault_noname_tenant_url }}/api/v1/integrations"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ vault_noname_api_key }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      type: "nginx"
-      name: "lab-nginx"
-      config:
-        status_url: "{{ nginx_status_url }}"
-    status_code: [200, 201, 409]
+    - name: Set Noname access token fact
+      ansible.builtin.set_fact:
+        noname_access_token: "{{ noname_token_response.json.accessToken }}"
 
-- name: Register MuleSoft integration with Noname
-  ansible.builtin.uri:
-    url: "{{ vault_noname_tenant_url }}/api/v1/integrations"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ vault_noname_api_key }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      type: "mulesoft"
-      name: "lab-mulesoft"
-      config:
-        api_url: "{{ mulesoft_api_url }}"
-    status_code: [200, 201, 409]
+    - name: Verify Noname SaaS tenant is reachable
+      ansible.builtin.uri:
+        url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/api/v1/health"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ noname_access_token }}"
+        status_code: 200
+      register: noname_health
+      retries: 5
+      delay: 10
+      until: noname_health.status == 200
+
+    - name: Fetch Noname engine list
+      ansible.builtin.uri:
+        url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/api/v3/engines"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ noname_access_token }}"
+        status_code: 200
+      register: noname_engines_response
+
+    - name: Set Noname engine ID fact
+      ansible.builtin.set_fact:
+        noname_engine_id: "{{ noname_engines_response.json.entities[0].id }}"
+
+    - name: Register Kong integration with Noname
+      ansible.builtin.uri:
+        url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/api/v3/sources/kong"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ noname_access_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          alias: "lab-kong"
+          settings:
+            engineId: "{{ noname_engine_id }}"
+            subType: "kong"
+          hostHeaders:
+            - "x-forwarded-host"
+        status_code: [200, 201, 409]
+
+    - name: Register NGINX integration with Noname
+      ansible.builtin.uri:
+        url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/api/v3/sources/nginx"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ noname_access_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          alias: "lab-nginx"
+          settings:
+            engineId: "{{ noname_engine_id }}"
+          hostHeaders:
+            - "x-forwarded-host"
+        status_code: [200, 201, 409]

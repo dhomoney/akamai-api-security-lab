@@ -1,6 +1,6 @@
 resource "aws_security_group" "alb" {
   name        = "${var.project_name}-alb-sg"
-  description = "Public ALB — HTTP/HTTPS from internet"
+  description = "Public ALB - HTTP/HTTPS from internet"
   vpc_id      = var.vpc_id
 
   ingress {
@@ -17,6 +17,14 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "Kong Admin API from admin CIDR"
+    from_port   = 8001
+    to_port     = 8001
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -29,7 +37,7 @@ resource "aws_security_group" "alb" {
 
 resource "aws_security_group" "ecs" {
   name        = "${var.project_name}-ecs-sg"
-  description = "ECS cluster nodes — traffic from ALB + admin SSH"
+  description = "ECS cluster nodes - traffic from ALB and admin SSH"
   vpc_id      = var.vpc_id
 
   ingress {
@@ -41,11 +49,11 @@ resource "aws_security_group" "ecs" {
   }
 
   ingress {
-    description = "SSH from admin CIDR"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
+    description     = "SSH from bastion"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [var.bastion_sg_id]
   }
 
   ingress {
@@ -76,7 +84,7 @@ resource "aws_security_group" "ecs" {
 
 resource "aws_security_group" "noname" {
   name        = "${var.project_name}-noname-sg"
-  description = "Noname sensor — outbound to SaaS, inbound API from gateways"
+  description = "Noname sensor - outbound to SaaS, inbound API from gateways"
   vpc_id      = var.vpc_id
 
   ingress {

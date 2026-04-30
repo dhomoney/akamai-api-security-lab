@@ -32,3 +32,18 @@ output "ssh_key_name" {
   description = "AWS key pair name for SSH access"
   value       = aws_key_pair.lab.key_name
 }
+
+output "bastion_public_ip" {
+  description = "Bastion host public IP - use as ProxyJump for SSH to private nodes"
+  value       = module.bastion.public_ip
+}
+
+output "apps_alb_dns" {
+  description = "Internal ALB DNS for vulnerable apps (accessible from gateways only)"
+  value       = module.vulnerable_apps.apps_alb_dns
+}
+
+output "app_urls" {
+  description = "Internal URLs for each vulnerable app"
+  value       = module.vulnerable_apps.app_urls
+}

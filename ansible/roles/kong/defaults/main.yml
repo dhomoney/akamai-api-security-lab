@@ -1,2 +1,3 @@
 ---
 kong_admin_url: "http://localhost:8001"
+apps_alb_dns: "localhost"

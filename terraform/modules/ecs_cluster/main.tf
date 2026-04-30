@@ -70,7 +70,7 @@ resource "aws_launch_template" "ecs" {
 
   tag_specifications {
     resource_type = "instance"
-    tags          = merge(var.tags, { Name = "${var.project_name}-ecs-node" })
+    tags          = merge(var.tags, { Name = "${var.project_name}-ecs-node", Role = "ecs_node" })
   }
 
   lifecycle {

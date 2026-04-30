@@ -1,0 +1,12 @@
+---
+- name: restart apps
+  ansible.builtin.command:
+    cmd: docker-compose restart
+    chdir: "/opt/apps/{{ item }}"
+  loop:
+    - crapi
+    - vapi
+    - vampi
+    - dvga
+    - pixi
+  changed_when: true

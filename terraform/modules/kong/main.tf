@@ -36,6 +36,34 @@ resource "aws_lb_listener" "kong_http" {
   }
 }
 
+resource "aws_lb_target_group" "kong_admin" {
+  name        = "${var.project_name}-kong-admin-tg"
+  port        = 8001
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
+  target_type = "instance"
+
+  health_check {
+    path                = "/status"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    interval            = 30
+  }
+
+  tags = var.tags
+}
+
+resource "aws_lb_listener" "kong_admin" {
+  load_balancer_arn = aws_lb.kong.arn
+  port              = 8001
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.kong_admin.arn
+  }
+}
+
 resource "aws_iam_role" "kong_task_exec" {
   name = "${var.project_name}-kong-task-exec-role"
 
@@ -82,11 +110,11 @@ resource "aws_ecs_task_definition" "kong" {
       ]
 
       environment = [
-        { name = "KONG_DATABASE", value = "off" },
-        { name = "KONG_DECLARATIVE_CONFIG", value = "/kong/declarative/kong.yml" },
-        { name = "KONG_PROXY_LISTEN", value = "0.0.0.0:8000, 0.0.0.0:8443 ssl" },
-        { name = "KONG_ADMIN_LISTEN", value = "0.0.0.0:8001" },
-        { name = "KONG_LOG_LEVEL", value = "info" }
+        { name = "KONG_DATABASE",                  value = "off" },
+        { name = "KONG_DECLARATIVE_CONFIG_STRING", value = "_format_version: \"3.0\"\n" },
+        { name = "KONG_PROXY_LISTEN",              value = "0.0.0.0:8000, 0.0.0.0:8443 ssl" },
+        { name = "KONG_ADMIN_LISTEN",              value = "0.0.0.0:8001" },
+        { name = "KONG_LOG_LEVEL",                 value = "info" }
       ]
 
       logConfiguration = {
@@ -121,6 +149,12 @@ resource "aws_ecs_service" "kong" {
     target_group_arn = aws_lb_target_group.kong_proxy.arn
     container_name   = "kong"
     container_port   = 8000
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.kong_admin.arn
+    container_name   = "kong"
+    container_port   = 8001
   }
 
   tags = var.tags

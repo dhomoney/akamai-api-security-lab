@@ -1,0 +1,59 @@
+---
+- name: Install Docker and git
+  ansible.builtin.dnf:
+    name:
+      - docker
+      - git
+    state: present
+
+- name: Start and enable Docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Install Docker Compose binary
+  ansible.builtin.get_url:
+    url: "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64"
+    dest: /usr/local/bin/docker-compose
+    mode: "0755"
+    timeout: 60
+
+- name: Create app directories
+  ansible.builtin.file:
+    path: "/opt/apps/{{ item }}"
+    state: directory
+    owner: ec2-user
+    mode: "0755"
+  loop:
+    - crapi
+    - vapi
+    - vampi
+    - dvga
+    - pixi
+
+- name: Deploy Docker Compose files
+  ansible.builtin.template:
+    src: "{{ item }}-compose.yml.j2"
+    dest: "/opt/apps/{{ item }}/docker-compose.yml"
+    owner: ec2-user
+    mode: "0644"
+  loop:
+    - crapi
+    - vapi
+    - vampi
+    - dvga
+    - pixi
+  notify: restart apps
+
+- name: Pull and start all apps
+  ansible.builtin.command:
+    cmd: docker-compose up -d --pull always
+    chdir: "/opt/apps/{{ item }}"
+  loop:
+    - crapi
+    - vapi
+    - vampi
+    - dvga
+    - pixi
+  changed_when: true

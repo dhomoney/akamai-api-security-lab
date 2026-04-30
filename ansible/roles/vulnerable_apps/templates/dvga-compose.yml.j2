@@ -1,0 +1,9 @@
+services:
+  dvga:
+    image: dolevf/dvga:latest
+    restart: unless-stopped
+    ports:
+      - "5013:5013"
+    environment:
+      WEB_HOST: "0.0.0.0"
+    mem_limit: 128m

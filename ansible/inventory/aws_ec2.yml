@@ -1,9 +1,10 @@
 plugin: amazon.aws.aws_ec2
+profile: SA_Standard_Access-491489166083
 regions:
   - us-east-2
 
 filters:
-  tag:Project: akamai-lab
+  tag:Project: homoney-akamai-lab
   tag:Environment: lab
   instance-state-name: running
 

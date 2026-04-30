@@ -18,7 +18,16 @@ http {
     sendfile        on;
     keepalive_timeout 65;
 
-    # Health check endpoint (used by ALB and Noname status integration)
+    upstream vampi_backend {
+        server {{ apps_alb_dns }}:5000;
+        keepalive 16;
+    }
+
+    upstream dvga_backend {
+        server {{ apps_alb_dns }}:5013;
+        keepalive 16;
+    }
+
     server {
         listen 80;
         server_name _;
@@ -30,10 +39,27 @@ http {
 
         location /nginx_status {
             stub_status on;
-            allow {{ noname_sensor_ip | default('127.0.0.1') }};
+            allow 127.0.0.1;
             deny all;
         }
 
-        # Add upstream proxy blocks here per lab scenario
+        location /vampi/ {
+            proxy_pass         http://vampi_backend/;
+            proxy_set_header   Host $host;
+            proxy_set_header   X-Real-IP $remote_addr;
+            proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /dvga/ {
+            proxy_pass         http://dvga_backend/;
+            proxy_set_header   Host $host;
+            proxy_set_header   X-Real-IP $remote_addr;
+            proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location / {
+            return 200 "NGINX lab gateway - routes: /vampi/ /dvga/\n";
+            add_header Content-Type text/plain;
+        }
     }
 }

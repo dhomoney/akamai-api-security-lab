@@ -1,0 +1,90 @@
+services:
+  mongodb:
+    image: mongo:5.0.14
+    restart: unless-stopped
+    volumes:
+      - crapi-mongo:/data/db
+    mem_limit: 512m
+
+  postgresdb:
+    image: postgres:14
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: crapi
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: crapisecret
+    volumes:
+      - crapi-postgres:/var/lib/postgresql/data
+    mem_limit: 256m
+
+  mailhog:
+    image: mailhog/mailhog
+    restart: unless-stopped
+    mem_limit: 64m
+
+  crapi-identity:
+    image: crapi/crapi-identity:latest
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+      - postgresdb
+    environment:
+      DB_NAME: crapi
+      DB_USER: admin
+      DB_PASSWORD: crapisecret
+      DB_HOST: postgresdb
+      DB_PORT: "5432"
+      SERVER_PORT: "8080"
+      MONGO_DB_HOST: mongodb
+      MONGO_DB_PORT: "27017"
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+      SMTP_EMAIL: admin@crapi.io
+      SMTP_PASS: password
+      JWT_SECRET: crapi-secret-key-lab
+      ENABLE_SHELL_INJECTION: "false"
+    mem_limit: 512m
+
+  crapi-community:
+    image: crapi/crapi-community:latest
+    restart: unless-stopped
+    depends_on:
+      - crapi-identity
+      - mongodb
+    environment:
+      MONGO_DB_HOST: mongodb
+      MONGO_DB_PORT: "27017"
+      IDENTITY_SERVICE: "http://crapi-identity:8080"
+    mem_limit: 256m
+
+  crapi-workshop:
+    image: crapi/crapi-workshop:latest
+    restart: unless-stopped
+    depends_on:
+      - crapi-identity
+      - postgresdb
+    environment:
+      DB_NAME: crapi
+      DB_USER: admin
+      DB_PASSWORD: crapisecret
+      DB_HOST: postgresdb
+      DB_PORT: "5432"
+      IDENTITY_SERVICE: "http://crapi-identity:8080"
+      MONGO_DB_HOST: mongodb
+      MONGO_DB_PORT: "27017"
+    mem_limit: 256m
+
+  crapi-web:
+    image: crapi/crapi-web:latest
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - crapi-identity
+      - crapi-community
+      - crapi-workshop
+    mem_limit: 128m
+
+volumes:
+  crapi-mongo:
+  crapi-postgres:

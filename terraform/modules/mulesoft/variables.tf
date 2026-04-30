@@ -7,8 +7,10 @@ variable "public_subnet_ids"  { type = list(string) }
 variable "task_sg_id"         { type = string }
 variable "alb_sg_id"          { type = string }
 variable "capacity_provider"  { type = string }
-variable "tags"               { type = map(string); default = {} }
-
+variable "tags" {
+  type    = map(string)
+  default = {}
+}
 variable "mule_image" {
   description = "Mule Runtime Docker image URI (push to ECR after building)"
   type        = string

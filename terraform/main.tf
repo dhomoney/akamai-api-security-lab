@@ -16,6 +16,17 @@ provider "aws" {
   profile = var.aws_profile
 }
 
+module "bastion" {
+  source = "./modules/bastion"
+
+  project_name     = var.project_name
+  vpc_id           = module.vpc.vpc_id
+  public_subnet_id = module.vpc.public_subnet_ids[0]
+  admin_cidr       = var.admin_cidr
+  key_name         = aws_key_pair.lab.key_name
+  tags             = local.common_tags
+}
+
 resource "aws_key_pair" "lab" {
   key_name   = "${var.project_name}-key"
   public_key = file("${path.root}/../keys/lab_key.pub")
@@ -35,10 +46,11 @@ module "vpc" {
 module "security_groups" {
   source = "./modules/security_groups"
 
-  project_name = var.project_name
-  vpc_id       = module.vpc.vpc_id
-  admin_cidr   = var.admin_cidr
-  tags         = local.common_tags
+  project_name  = var.project_name
+  vpc_id        = module.vpc.vpc_id
+  admin_cidr    = var.admin_cidr
+  bastion_sg_id = module.bastion.sg_id
+  tags          = local.common_tags
 }
 
 module "ecs_cluster" {
@@ -98,6 +110,19 @@ module "mulesoft" {
   task_sg_id         = module.security_groups.ecs_sg_id
   alb_sg_id          = module.security_groups.alb_sg_id
   capacity_provider  = module.ecs_cluster.capacity_provider_name
+  tags               = local.common_tags
+}
+
+module "vulnerable_apps" {
+  source = "./modules/vulnerable_apps"
+
+  project_name       = var.project_name
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+  ecs_sg_id          = module.security_groups.ecs_sg_id
+  bastion_sg_id      = module.bastion.sg_id
+  key_name           = aws_key_pair.lab.key_name
+  instance_type      = var.instance_type
   tags               = local.common_tags
 }
 

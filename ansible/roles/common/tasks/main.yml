@@ -9,7 +9,6 @@
   ansible.builtin.dnf:
     name:
       - jq
-      - curl
       - wget
       - unzip
       - python3

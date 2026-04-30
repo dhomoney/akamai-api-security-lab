@@ -1,0 +1,9 @@
+services:
+  vampi:
+    image: erev0s/vampi:latest
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - vulnerable=1
+    mem_limit: 128m
