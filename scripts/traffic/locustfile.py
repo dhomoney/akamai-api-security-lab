@@ -7,11 +7,13 @@ from locust import FastHttpUser, between, task
 
 KONG_ALB_DNS = os.environ.get("KONG_ALB_DNS")
 NGINX_ALB_DNS = os.environ.get("NGINX_ALB_DNS")
+MULE_ALB_DNS = os.environ.get("MULE_ALB_DNS")
 if not KONG_ALB_DNS or not NGINX_ALB_DNS:
     sys.exit("ERROR: KONG_ALB_DNS and NGINX_ALB_DNS must be set. Run via 'make traffic'.")
 
 KONG_BASE = f"http://{KONG_ALB_DNS}"
 NGINX_BASE = f"http://{NGINX_ALB_DNS}"
+MULE_BASE = f"http://{MULE_ALB_DNS}" if MULE_ALB_DNS else None
 
 
 def uid():
@@ -232,3 +234,53 @@ class CrAPIUser(FastHttpUser):
     def community_posts(self):
         self.client.get("/crapi/community/api/v2/community/posts/recent",
                         headers=self.auth)
+
+
+class FlexGatewayUser(FastHttpUser):
+    """Hits Anypoint Flex Gateway directly. Routes are configured in Anypoint API
+    Manager — until proxy APIs are wired there, expect 404/503. Traffic still
+    flows through Flex so Noname can observe it once registered as a source.
+    """
+
+    abstract = True  # set by host_for_mule() below to enable only when MULE_BASE is set
+    weight = 1
+    wait_time = between(2, 5)
+
+    @task(3)
+    def health_check(self):
+        with self.client.get("/api/v1/health-check", catch_response=True) as r:
+            if r.status_code in (200, 404, 503):
+                r.success()
+
+    @task(2)
+    def root(self):
+        with self.client.get("/", catch_response=True) as r:
+            if r.status_code in (200, 404, 503):
+                r.success()
+
+    @task(2)
+    def get_users(self):
+        with self.client.get("/api/users", catch_response=True) as r:
+            if r.status_code in (200, 404, 503):
+                r.success()
+
+    @task(2)
+    def get_orders(self):
+        with self.client.get("/api/orders", catch_response=True) as r:
+            if r.status_code in (200, 404, 503):
+                r.success()
+
+    @task(1)
+    def post_order(self):
+        with self.client.post("/api/orders",
+                              json={"product_id": uid(), "quantity": 1},
+                              catch_response=True) as r:
+            if r.status_code in (200, 201, 404, 503):
+                r.success()
+
+
+if MULE_BASE:
+    # Concrete subclass with host set; only registered when MULE_ALB_DNS is provided
+    class _MuleUser(FlexGatewayUser):
+        abstract = False
+        host = MULE_BASE

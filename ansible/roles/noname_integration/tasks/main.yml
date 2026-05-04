@@ -51,7 +51,20 @@
       ansible.builtin.set_fact:
         noname_engine_id: "{{ noname_engines_response.json.entities[0].id }}"
 
-    - name: Register Kong integration with Noname
+    - name: Fetch existing traffic sources
+      ansible.builtin.uri:
+        url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/api/v3/sources"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ noname_access_token }}"
+        status_code: 200
+      register: noname_sources_response
+
+    - name: Set existing source aliases fact
+      ansible.builtin.set_fact:
+        noname_existing_aliases: "{{ noname_sources_response.json | map(attribute='alias') | list }}"
+
+    - name: Register Kong integration with Noname (only if not already present)
       ansible.builtin.uri:
         url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/api/v3/sources/kong"
         method: POST
@@ -66,9 +79,10 @@
             subType: "kong"
           hostHeaders:
             - "x-forwarded-host"
-        status_code: [200, 201, 409]
+        status_code: [200, 201]
+      when: "'lab-kong' not in noname_existing_aliases"
 
-    - name: Register NGINX integration with Noname
+    - name: Register NGINX integration with Noname (only if not already present)
       ansible.builtin.uri:
         url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/api/v3/sources/nginx"
         method: POST
@@ -82,4 +96,5 @@
             engineId: "{{ noname_engine_id }}"
           hostHeaders:
             - "x-forwarded-host"
-        status_code: [200, 201, 409]
+        status_code: [200, 201]
+      when: "'lab-nginx' not in noname_existing_aliases"

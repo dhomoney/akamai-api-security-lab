@@ -74,6 +74,7 @@ The Noname sensor plugin zip files are not included in this repo. Obtain them fr
 |---|---|
 | `integration-files/noname-security-kong-policy.zip` | Akamai/Noname tenant portal or support |
 | `integration-files/noname-security-nginx-policy.zip` | Akamai/Noname tenant portal or support |
+| `integration-files/noname-security-mulesoft-policy.zip` | Akamai/Noname tenant portal or support |
 
 You also need the following from your Noname tenant (used in the Ansible vault):
 
@@ -222,7 +223,7 @@ This phase bakes the Noname Lua plugins into custom Docker images, pushes them t
 make plugin-images
 ```
 
-This creates ECR repos, builds the Kong, NGINX, and Anypoint Flex Gateway Docker images (Kong and NGINX with Noname plugins installed), pushes all three to ECR, and writes `terraform/plugin.auto.tfvars` with the ECR image URIs and `noname_plugin_enabled = true`.
+This creates ECR repos, builds the Kong, NGINX, and Anypoint Flex Gateway Docker images (Kong and NGINX with Noname plugins installed), pushes all three to ECR, and writes `terraform/plugin.auto.tfvars` with the ECR image URIs and `noname_plugin_enabled = true`. The Kong and NGINX Dockerfiles both patch the Noname plugin's `prevention.lua` with a type guard before the `next()` call — without this fix, a malformed engine response (Lua string instead of rules table) crashes the plugin and returns 500 to the client.
 
 ```bash
 # Step 2: Update ECS task definitions to use the new plugin images
@@ -447,7 +448,7 @@ aws secretsmanager put-secret-value \
 | Kong shows 0 routes, or appears offline in Noname | ECS task restarted and lost in-memory config | `make provision-plugins` |
 | `/vampi/users/v1` returns an HTML page with `no such table: users` | VAmPI SQLite DB not initialized | `curl -s http://${NGINX_ALB}/vampi/createdb` |
 | `make provision-plugins` fails immediately with "Connection refused" to Noname tenant | Transient network error to Noname SaaS | Re-run the command — almost always a one-off |
-| NGINX returns 500 for `/vampi/` or `/dvga/` | Unpatched NGINX image deployed (prevention.lua bug) | Rebuild and push the NGINX image: `make plugin-images && make apply` |
+| NGINX returns 500 for `/vampi/` or `/dvga/`, or Kong returns 500 for `/crapi/*` | Unpatched gateway image deployed (Noname plugin `prevention.lua` bug — `bad argument #1 to 'next' (table expected, got string)` in Kong/NGINX logs) | Rebuild and push the patched images: `make plugin-images && make apply` |
 | `docker: permission denied` | Docker group not active in current shell | Log out and back in, or run `newgrp docker` |
 | `make provision-plugins` runs but Kong still has 0 routes | Ran `make provision-plugins` from wrong directory causing bad terraform output | Run directly from the repo root; the Makefile handles the `cd terraform` internally |
 
@@ -457,7 +458,7 @@ aws secretsmanager put-secret-value \
 
 | Feature | Status |
 |---|---|
-| Anypoint Flex Gateway | ECS task, ALB, and ECR image are fully provisioned. Requires `registration.yaml` stored in Secrets Manager. To register as a Noname source: obtain the MuleSoft Flex Gateway policy zip from Akamai support, create proxy APIs in Anypoint API Manager, then register via `POST /api/v3/sources/mulesoft`. |
+| Anypoint Flex Gateway | ECS task, ALB, and ECR image are fully provisioned, and the MuleSoft policy zip (`integration-files/noname-security-mulesoft-policy.zip`) has been obtained. Requires `registration.yaml` stored in Secrets Manager. Pending: add an automatic `POST /api/v3/sources/mulesoft` task to `ansible/roles/noname_integration/tasks/main.yml`, and create proxy APIs in Anypoint API Manager. The source can also be registered manually in the Noname UI in the meantime. |
 | Noname sensor container | Requires an image URI from your Akamai deployment guide. Not needed for gateway plugin mode — the plugins send traffic directly. |
 | HTTPS / TLS | ALB listeners are HTTP only. Add ACM certificates and HTTPS listeners for TLS-in-transit testing scenarios. |
 | Remote Terraform state | State is stored locally. For shared team use, configure an S3 + DynamoDB backend in `terraform/main.tf`. |

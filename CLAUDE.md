@@ -90,7 +90,7 @@ ansible/
     noname_integration/    # Registers Kong and NGINX as Noname traffic sources (MuleSoft pending — needs policy zip from Akamai)
 
 docker/
-  kong/Dockerfile          # FROM kong:latest + luarocks install of Noname Kong plugin
+  kong/Dockerfile          # FROM kong:latest + luarocks install of Noname Kong plugin; patches prevention.lua
   nginx/Dockerfile         # FROM openresty/openresty:bullseye + Noname Lua scripts; patches prevention.lua
   nginx/nginx.conf.template # nginx config with Noname Lua hooks; ${APPS_ALB_DNS} substituted at startup
   nginx/entrypoint.sh      # Runs envsubst, patches NN_SOURCE_KEY/NN_SOURCE_INDEX, starts OpenResty
@@ -100,6 +100,7 @@ docker/
 integration-files/         # Drop Noname-provided .zip files here (gitignored)
   noname-security-kong-policy.zip
   noname-security-nginx-policy.zip
+  noname-security-mulesoft-policy.zip
 
 .github/workflows/
   lint.yml                 # PR/push: terraform fmt+validate+tflint, ansible-lint
@@ -132,6 +133,7 @@ Registering integrations is not enough — each gateway needs a sensor plugin th
 
 - **Kong**: `docker/kong/Dockerfile` installs the LuaRocks rock from the zip into `kong:latest`. The task definition adds `KONG_PLUGINS=bundled,nonamesecurity` when `noname_plugin_enabled=true`. The `ansible/plugins.yml` playbook fetches the correct `sourceKey`/`sourceIndex` from `GET /api/v3/sources` and pushes them via the Kong declarative config `/config` endpoint.
 - **NGINX**: `docker/nginx/Dockerfile` builds on `openresty/openresty:bullseye` (which has LuaJIT + lua-nginx-module built in — standard `nginx:latest` does not). The Lua scripts are copied to `/usr/local/openresty/nginx/lua-scripts/`. The `nginx.conf.template` has the Noname hooks baked in; `entrypoint.sh` runs `envsubst` to substitute `${APPS_ALB_DNS}` at container startup.
+- **prevention.lua type-guard patch**: BOTH Dockerfiles patch the Noname plugin's `prevention.lua` with a `if type(tbl) ~= "table" then return true end` guard before the `next(tbl)` call. The vendor plugin assumes `self._rules` is always a table, but when the engine returns a JSON-string error response, `cjson.decode` produces a Lua string and `next()` crashes with `bad argument #1 to 'next' (table expected, got string)`, returning 500 to the client. Kong patches `/usr/local/share/lua/5.1/kong/plugins/nonamesecurity/prevention.lua`; NGINX patches `/usr/local/openresty/nginx/lua-scripts/prevention.lua`.
 - **Chicken-and-egg**: ECR repos must exist before images can be pushed. `make plugin-images` handles this: creates ECR repos via `terraform apply -target module.ecr`, builds and pushes images, then writes `terraform/plugin.auto.tfvars` (gitignored) with the ECR URIs and `noname_plugin_enabled=true`. A subsequent `make apply` picks up the new image references.
 - **Source key mismatch**: The Kong zip ships with hardcoded `NN_SOURCE_KEY` values that differ from the registered integration's `sourceKey`. The `plugins.yml` playbook fetches the correct values dynamically from `GET /api/v3/sources`, making it generic for any team member's tenant.
 
@@ -152,7 +154,7 @@ aws secretsmanager put-secret-value \
 
 ## Known TODOs / Incomplete Areas
 
-- **Flex Gateway Noname source**: Flex Gateway ECS task and image build are complete. Pending: (1) obtain MuleSoft Flex Gateway policy zip from Akamai support, (2) create proxy APIs in Anypoint API Manager, (3) add `POST /api/v3/sources/mulesoft` registration task to `ansible/roles/noname_integration/tasks/main.yml`.
+- **Flex Gateway Noname source**: Flex Gateway ECS task and image build are complete; the MuleSoft policy zip is now in `integration-files/noname-security-mulesoft-policy.zip`. Source can be registered manually in the Noname UI today. Pending: (1) add `POST /api/v3/sources/mulesoft` registration task to `ansible/roles/noname_integration/tasks/main.yml`, (2) create proxy APIs in Anypoint API Manager.
 - **Noname sensor image**: Obtain the connector image URI from your Akamai/Noname tenant deployment guide. Set `noname_sensor_image` in `terraform.tfvars`.
 - **HTTPS / TLS**: ALB listeners are HTTP only. Add ACM certificate + HTTPS listeners for any scenario requiring TLS-in-transit testing.
 
@@ -165,3 +167,5 @@ aws secretsmanager put-secret-value \
 - Noname integration engine ID is fetched dynamically via `GET /api/v3/engines` — no vault variable needed for it.
 - The `nginx` role runs on `localhost` and checks the NGINX ALB (not the ECS node directly); `nginx_alb_dns` is passed as an extra-var from Terraform output.
 - No `version:` key in any Docker Compose files — it is obsolete in modern Docker and generates warnings.
+- The `noname_integration` role does a `GET /api/v3/sources` first and only POSTs to register `lab-kong`/`lab-nginx` if the alias is not already present. Without this guard, every `make provision` run created a new duplicate source (the API does not return 409 on conflict — it just creates another).
+- After pulling new crAPI images that change env-var shape (TLS/MongoDB/Postgres credential vars), the postgres and mongo volumes must be wiped once with `cd /opt/apps/crapi && sudo docker-compose down -v` on the apps host. The init env vars (`POSTGRES_PASSWORD`, `MONGO_INITDB_ROOT_*`) only apply to a fresh data dir; existing volumes keep the old credentials and break authentication from the application services.

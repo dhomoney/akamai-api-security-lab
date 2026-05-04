@@ -2,6 +2,9 @@ services:
   mongodb:
     image: mongo:5.0.14
     restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: crapisecretpassword
     volumes:
       - crapi-mongo:/data/db
     mem_limit: 512m
@@ -12,7 +15,7 @@ services:
     environment:
       POSTGRES_DB: crapi
       POSTGRES_USER: admin
-      POSTGRES_PASSWORD: crapisecret
+      POSTGRES_PASSWORD: crapisecretpassword
     volumes:
       - crapi-postgres:/var/lib/postgresql/data
     mem_limit: 256m
@@ -31,18 +34,31 @@ services:
     environment:
       DB_NAME: crapi
       DB_USER: admin
-      DB_PASSWORD: crapisecret
+      DB_PASSWORD: crapisecretpassword
       DB_HOST: postgresdb
       DB_PORT: "5432"
       SERVER_PORT: "8080"
       MONGO_DB_HOST: mongodb
       MONGO_DB_PORT: "27017"
+      MONGO_DB_USER: admin
+      MONGO_DB_PASSWORD: crapisecretpassword
+      MONGO_DB_NAME: crapi
+      MAILHOG_HOST: mailhog
+      MAILHOG_PORT: "1025"
+      MAILHOG_DOMAIN: crapi.io
       SMTP_HOST: mailhog
       SMTP_PORT: "1025"
+      SMTP_FROM: no-reply@crapi.io
       SMTP_EMAIL: admin@crapi.io
       SMTP_PASS: password
+      SMTP_AUTH: "false"
+      SMTP_STARTTLS: "false"
       JWT_SECRET: crapi-secret-key-lab
+      JWT_EXPIRATION: "604800000"
       ENABLE_SHELL_INJECTION: "false"
+      ENABLE_LOG4J: "false"
+      API_GATEWAY_URL: http://crapi-web
+      TLS_ENABLED: "false"
     mem_limit: 512m
 
   crapi-community:
@@ -52,9 +68,20 @@ services:
       - crapi-identity
       - mongodb
     environment:
+      DB_NAME: crapi
+      DB_USER: admin
+      DB_PASSWORD: crapisecretpassword
+      DB_HOST: postgresdb
+      DB_PORT: "5432"
+      SERVER_PORT: "8087"
       MONGO_DB_HOST: mongodb
       MONGO_DB_PORT: "27017"
-      IDENTITY_SERVICE: "http://crapi-identity:8080"
+      MONGO_DB_USER: admin
+      MONGO_DB_PASSWORD: crapisecretpassword
+      MONGO_DB_NAME: crapi
+      IDENTITY_SERVICE: crapi-identity:8080
+      HTTP_PROTOCOL: http
+      TLS_ENABLED: "false"
     mem_limit: 256m
 
   crapi-workshop:
@@ -63,15 +90,34 @@ services:
     depends_on:
       - crapi-identity
       - postgresdb
+      - mongodb
     environment:
       DB_NAME: crapi
       DB_USER: admin
-      DB_PASSWORD: crapisecret
+      DB_PASSWORD: crapisecretpassword
       DB_HOST: postgresdb
       DB_PORT: "5432"
-      IDENTITY_SERVICE: "http://crapi-identity:8080"
+      SERVER_PORT: "8000"
       MONGO_DB_HOST: mongodb
       MONGO_DB_PORT: "27017"
+      MONGO_DB_USER: admin
+      MONGO_DB_PASSWORD: crapisecretpassword
+      MONGO_DB_NAME: crapi
+      IDENTITY_SERVICE: crapi-identity:8080
+      HTTP_PROTOCOL: http
+      SECRET_KEY: crapi-django-secret-lab
+      API_GATEWAY_URL: http://crapi-web
+      TLS_ENABLED: "false"
+    mem_limit: 256m
+
+  crapi-chatbot:
+    image: crapi/crapi-chatbot:latest
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: INFO
+      TLS_ENABLED: "false"
+      IDENTITY_SERVICE: crapi-identity:8080
+      HTTP_PROTOCOL: http
     mem_limit: 256m
 
   crapi-web:
@@ -83,6 +129,15 @@ services:
       - crapi-identity
       - crapi-community
       - crapi-workshop
+      - crapi-chatbot
+    environment:
+      IDENTITY_SERVICE: crapi-identity:8080
+      COMMUNITY_SERVICE: crapi-community:8087
+      WORKSHOP_SERVICE: crapi-workshop:8000
+      CHATBOT_SERVICE: crapi-chatbot:5002
+      MAILHOG_WEB_SERVICE: mailhog:8025
+      HTTP_PROTOCOL: http
+      TLS_ENABLED: "false"
     mem_limit: 128m
 
 volumes:

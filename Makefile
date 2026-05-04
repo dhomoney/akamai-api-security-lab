@@ -220,7 +220,7 @@ traffic-install: ## Install Locust into .venv for traffic generation
 	$(PIP) install -r $(TRAFFIC_DIR)/requirements.txt
 
 traffic: _tf_outputs ## Run headless traffic generator against lab APIs (Ctrl+C to stop)
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) \
+	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/locustfile.py \
 	  --host http://$(KONG_ALB_DNS) \
@@ -229,7 +229,7 @@ traffic: _tf_outputs ## Run headless traffic generator against lab APIs (Ctrl+C 
 	  --headless
 
 traffic-ui: _tf_outputs ## Launch Locust web UI at http://localhost:8089
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) \
+	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/locustfile.py \
 	  --host http://$(KONG_ALB_DNS)
