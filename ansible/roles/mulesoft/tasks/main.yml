@@ -1,29 +1,20 @@
 ---
-# MuleSoft Mule Runtime configuration.
-# Requires vault_anypoint_client_id and vault_anypoint_client_secret to be set.
-# TODO: Complete once Anypoint Platform org/license details are confirmed.
+# Verifies Anypoint Flex Gateway is reachable via its ALB.
+# The gateway registers itself with Anypoint Platform at startup using registration.yaml
+# injected from SSM — no Ansible tasks are needed for that registration step.
+# mulesoft_alb_dns is passed as an extra-var from Terraform output by the Makefile.
 
-- name: Verify MuleSoft runtime is responding
+- name: Wait for Flex Gateway ALB to become reachable
   ansible.builtin.uri:
-    url: "{{ mulesoft_api_url }}/api/health"
+    url: "http://{{ mulesoft_alb_dns }}/api/v1/health-check"
     method: GET
-    status_code: [200, 503]
+    status_code: [200, 404, 503]
   register: mule_health
   retries: 20
   delay: 15
-  until: mule_health.status in [200, 503]
+  until: mule_health.status in [200, 404, 503]
   delegate_to: localhost
 
-- name: Register runtime with Anypoint Platform
-  ansible.builtin.uri:
-    url: "https://anypoint.mulesoft.com/hybrid/api/v1/servers"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ anypoint_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      name: "{{ project_name }}-lab-runtime"
-    status_code: [201, 409]
-  delegate_to: localhost
-  when: anypoint_token is defined
+- name: Flex Gateway status
+  ansible.builtin.debug:
+    msg: "Flex Gateway ALB responding at http://{{ mulesoft_alb_dns }} (HTTP {{ mule_health.status }}). Check Anypoint Runtime Manager to confirm it shows as Connected."

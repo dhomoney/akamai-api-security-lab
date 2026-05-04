@@ -100,7 +100,7 @@ resource "aws_ecs_task_definition" "kong" {
   container_definitions = jsonencode([
     {
       name      = "kong"
-      image     = "kong:latest"
+      image     = var.kong_image
       essential = true
 
       portMappings = [
@@ -109,13 +109,16 @@ resource "aws_ecs_task_definition" "kong" {
         { containerPort = 8443, hostPort = 8443, protocol = "tcp" }
       ]
 
-      environment = [
-        { name = "KONG_DATABASE",                  value = "off" },
-        { name = "KONG_DECLARATIVE_CONFIG_STRING", value = "_format_version: \"3.0\"\n" },
-        { name = "KONG_PROXY_LISTEN",              value = "0.0.0.0:8000, 0.0.0.0:8443 ssl" },
-        { name = "KONG_ADMIN_LISTEN",              value = "0.0.0.0:8001" },
-        { name = "KONG_LOG_LEVEL",                 value = "info" }
-      ]
+      environment = concat(
+        [
+          { name = "KONG_DATABASE",                  value = "off" },
+          { name = "KONG_DECLARATIVE_CONFIG_STRING", value = "_format_version: \"3.0\"\n" },
+          { name = "KONG_PROXY_LISTEN",              value = "0.0.0.0:8000, 0.0.0.0:8443 ssl" },
+          { name = "KONG_ADMIN_LISTEN",              value = "0.0.0.0:8001" },
+          { name = "KONG_LOG_LEVEL",                 value = "info" }
+        ],
+        var.noname_plugin_enabled ? [{ name = "KONG_PLUGINS", value = "bundled,nonamesecurity" }] : []
+      )
 
       logConfiguration = {
         logDriver = "awslogs"

@@ -72,13 +72,21 @@ resource "aws_ecs_task_definition" "nginx" {
   container_definitions = jsonencode([
     {
       name      = "nginx"
-      image     = "nginx:latest"
+      image     = var.nginx_image
       essential = true
 
       portMappings = [
         { containerPort = 80, hostPort = 8080, protocol = "tcp" },
         { containerPort = 443, hostPort = 8443, protocol = "tcp" }
       ]
+
+      environment = concat(
+        [{ name = "APPS_ALB_DNS", value = var.apps_alb_dns }],
+        var.noname_source_key != "" ? [
+          { name = "NN_SOURCE_KEY",   value = var.noname_source_key },
+          { name = "NN_SOURCE_INDEX", value = tostring(var.noname_source_index) }
+        ] : []
+      )
 
       logConfiguration = {
         logDriver = "awslogs"

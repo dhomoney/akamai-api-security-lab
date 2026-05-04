@@ -1,7 +1,39 @@
-project_name       = "akamai-lab"
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit it.
+
+# ── Core ───────────────────────────────────────────────────────────────────────
+
+project_name       = "yourname-akamai-lab"    # prefix applied to all AWS resource names
 aws_region         = "us-east-2"
-aws_profile        = "default"       # AWS CLI profile with Akamai SA credentials
+aws_profile        = "SA_Standard_Access-491489166083"  # AWS SSO profile
 vpc_cidr           = "10.0.0.0/16"
 availability_zones = ["us-east-2a", "us-east-2b"]
-admin_cidr         = "YOUR_IP/32"    # e.g. "203.0.113.5/32" — restricts SSH + admin API access
 instance_type      = "t3.small"
+
+# Your public IP — restricts SSH access to the bastion and the Kong Admin API (port 8001).
+# Find it with: curl -s https://ifconfig.me
+# 'make apply' and 'make plan' auto-detect your current IP and pass it as -var admin_cidr=...
+# so this value is used only for 'terraform apply' run outside of make.
+admin_cidr         = "YOUR_IP/32"
+
+# ── Noname sensor plugins (set by 'make plugin-images' — do not edit manually) ──
+#
+# These are written automatically to terraform/plugin.auto.tfvars after running
+# 'make plugin-images' and 'make provision-plugins'. You do not need to set them here.
+# They are documented below for reference only.
+#
+# kong_image            = "123456789.dkr.ecr.us-east-2.amazonaws.com/yourname-akamai-lab/kong:latest"
+# nginx_image           = "123456789.dkr.ecr.us-east-2.amazonaws.com/yourname-akamai-lab/nginx:latest"
+# noname_plugin_enabled = true
+# noname_nginx_source_key   = "<written by make provision-plugins>"
+# noname_nginx_source_index = 1
+
+# ── Noname sensor container (optional — not required for gateway plugin mode) ──
+#
+# The Noname sensor runs as a sidecar ECS task that pulls traffic metadata from
+# the gateways. It requires a proprietary Docker image from Akamai. Leave as-is
+# unless you have obtained the image URI from your Akamai deployment guide.
+#
+# noname_sensor_image = "REPLACE_WITH_NONAME_IMAGE"  # from Akamai deployment guide
+# noname_tenant_url   = "https://yourname-lab.nonamesec.com"
+# noname_api_key      = "REPLACE_WITH_API_KEY"       # from Noname tenant settings

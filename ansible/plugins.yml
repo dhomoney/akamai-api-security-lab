@@ -1,0 +1,139 @@
+---
+# Configures the Noname sensor plugin on Kong and NGINX.
+# Requires: noname_plugin_enabled=true in terraform, images built via 'make plugin-images'.
+# Fetches the correct sourceKey/sourceIndex dynamically from the Noname API so this
+# works for any team member's tenant regardless of what the zip was pre-configured with.
+# After running, re-run 'make apply' to push the NGINX source key into the ECS task env.
+
+- name: Load vault
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Include vault variables
+      ansible.builtin.include_vars:
+        file: vault.yml
+
+- name: Configure Noname sensor plugin on Kong and NGINX
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Skip — Noname credentials not configured
+      ansible.builtin.debug:
+        msg: "Noname credentials not set in vault.yml — run 'make vault-edit'. Skipping."
+      when: vault_noname_client_id == "" or vault_noname_client_secret == "" or vault_noname_tenant_url == ""
+
+    - name: Plugin configuration block
+      when: vault_noname_client_id != "" and vault_noname_client_secret != "" and vault_noname_tenant_url != ""
+      block:
+        - name: Obtain Noname API access token
+          ansible.builtin.uri:
+            url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/auth/token"
+            method: POST
+            body_format: json
+            body:
+              client_id: "{{ vault_noname_client_id }}"
+              client_secret: "{{ vault_noname_client_secret }}"
+            status_code: [200, 201]
+          register: noname_token_response
+
+        - name: Set access token fact
+          ansible.builtin.set_fact:
+            noname_access_token: "{{ noname_token_response.json.accessToken }}"
+            nn_engine_url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/engine?structure=base64-payload"
+
+        - name: Fetch registered traffic sources
+          ansible.builtin.uri:
+            url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/api/v3/sources"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ noname_access_token }}"
+            status_code: 200
+          register: noname_sources_response
+
+        - name: Extract lab-kong source config
+          ansible.builtin.set_fact:
+            noname_kong_source: "{{ noname_sources_response.json | selectattr('alias', 'equalto', 'lab-kong') | first }}"
+
+        - name: Extract lab-nginx source config
+          ansible.builtin.set_fact:
+            noname_nginx_source: "{{ noname_sources_response.json | selectattr('alias', 'equalto', 'lab-nginx') | first }}"
+
+        - name: Wait for Kong Admin API
+          ansible.builtin.uri:
+            url: "{{ kong_admin_url }}/status"
+            method: GET
+            status_code: 200
+          register: kong_status
+          retries: 20
+          delay: 10
+          until: kong_status.status == 200
+
+        - name: Push Kong declarative config with Noname plugin
+          ansible.builtin.uri:
+            url: "{{ kong_admin_url }}/config"
+            method: POST
+            body_format: json
+            body:
+              _format_version: "3.0"
+              plugins:
+                - name: nonamesecurity
+                  config:
+                    NN_ENGINE_URL: "{{ nn_engine_url }}"
+                    NN_SOURCE_KEY: "{{ noname_kong_source.sourceKey }}"
+                    NN_SOURCE_INDEX: "{{ noname_kong_source.sourceIndex | int }}"
+                    NN_SOURCE_TYPE: 7
+                    NN_PREVENTION_ENABLED: true
+              services:
+                - name: crapi
+                  url: "http://{{ apps_alb_dns }}:8080"
+                  routes:
+                    - name: crapi-route
+                      paths:
+                        - /crapi
+                      strip_path: true
+                - name: pixi
+                  url: "http://{{ apps_alb_dns }}:8888"
+                  routes:
+                    - name: pixi-route
+                      paths:
+                        - /pixi
+                      strip_path: true
+                - name: sample
+                  url: "http://httpbin.org"
+                  routes:
+                    - name: sample-route
+                      paths:
+                        - /sample
+                      strip_path: true
+            status_code: [200, 201]
+          delegate_to: localhost
+
+        - name: Write NGINX source key to plugin.auto.tfvars
+          ansible.builtin.lineinfile:
+            path: "{{ playbook_dir }}/../terraform/plugin.auto.tfvars"
+            regexp: '^noname_nginx_source_key'
+            line: 'noname_nginx_source_key   = "{{ noname_nginx_source.sourceKey }}"'
+
+        - name: Write NGINX source index to plugin.auto.tfvars
+          ansible.builtin.lineinfile:
+            path: "{{ playbook_dir }}/../terraform/plugin.auto.tfvars"
+            regexp: '^noname_nginx_source_index'
+            line: 'noname_nginx_source_index = {{ noname_nginx_source.sourceIndex | int }}'
+
+        - name: Verify NGINX is reachable and serving health endpoint
+          ansible.builtin.uri:
+            url: "http://{{ nginx_alb_dns }}/health"
+            method: GET
+            status_code: 200
+          register: nginx_health
+          retries: 20
+          delay: 30
+          until: nginx_health.status == 200
+
+        - name: Show plugin status
+          ansible.builtin.debug:
+            msg:
+              - "Kong: nonamesecurity plugin active (sourceKey={{ noname_kong_source.sourceKey }}, index={{ noname_kong_source.sourceIndex }})"
+              - "NGINX: health check passed at http://{{ nginx_alb_dns }}/health"
+              - "NGINX source key written to plugin.auto.tfvars — run 'make apply' to update ECS task env."
+              - "NGINX: sourceKey={{ noname_nginx_source.sourceKey }}, index={{ noname_nginx_source.sourceIndex }}"

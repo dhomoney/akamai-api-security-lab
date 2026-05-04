@@ -16,6 +16,15 @@ provider "aws" {
   profile = var.aws_profile
 }
 
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+module "ecr" {
+  source       = "./modules/ecr"
+  project_name = var.project_name
+  tags         = local.common_tags
+}
+
 module "bastion" {
   source = "./modules/bastion"
 
@@ -71,46 +80,71 @@ module "ecs_cluster" {
 module "kong" {
   source = "./modules/kong"
 
-  project_name       = var.project_name
-  cluster_id         = module.ecs_cluster.cluster_id
-  cluster_name       = module.ecs_cluster.cluster_name
-  vpc_id             = module.vpc.vpc_id
-  private_subnet_ids = module.vpc.private_subnet_ids
-  public_subnet_ids  = module.vpc.public_subnet_ids
-  task_sg_id         = module.security_groups.ecs_sg_id
-  alb_sg_id          = module.security_groups.alb_sg_id
-  capacity_provider  = module.ecs_cluster.capacity_provider_name
-  tags               = local.common_tags
+  project_name          = var.project_name
+  cluster_id            = module.ecs_cluster.cluster_id
+  cluster_name          = module.ecs_cluster.cluster_name
+  vpc_id                = module.vpc.vpc_id
+  private_subnet_ids    = module.vpc.private_subnet_ids
+  public_subnet_ids     = module.vpc.public_subnet_ids
+  task_sg_id            = module.security_groups.ecs_sg_id
+  alb_sg_id             = module.security_groups.alb_sg_id
+  capacity_provider     = module.ecs_cluster.capacity_provider_name
+  kong_image            = var.kong_image
+  noname_plugin_enabled = var.noname_plugin_enabled
+  tags                  = local.common_tags
 }
 
 module "nginx" {
   source = "./modules/nginx"
 
-  project_name       = var.project_name
-  cluster_id         = module.ecs_cluster.cluster_id
-  cluster_name       = module.ecs_cluster.cluster_name
-  vpc_id             = module.vpc.vpc_id
-  private_subnet_ids = module.vpc.private_subnet_ids
-  public_subnet_ids  = module.vpc.public_subnet_ids
-  task_sg_id         = module.security_groups.ecs_sg_id
-  alb_sg_id          = module.security_groups.alb_sg_id
-  capacity_provider  = module.ecs_cluster.capacity_provider_name
-  tags               = local.common_tags
+  project_name          = var.project_name
+  cluster_id            = module.ecs_cluster.cluster_id
+  cluster_name          = module.ecs_cluster.cluster_name
+  vpc_id                = module.vpc.vpc_id
+  private_subnet_ids    = module.vpc.private_subnet_ids
+  public_subnet_ids     = module.vpc.public_subnet_ids
+  task_sg_id            = module.security_groups.ecs_sg_id
+  alb_sg_id             = module.security_groups.alb_sg_id
+  capacity_provider     = module.ecs_cluster.capacity_provider_name
+  nginx_image           = var.nginx_image
+  apps_alb_dns          = module.vulnerable_apps.apps_alb_dns
+  noname_source_key     = var.noname_nginx_source_key
+  noname_source_index   = var.noname_nginx_source_index
+  tags                  = local.common_tags
+}
+
+resource "aws_secretsmanager_secret" "flex_registration_yaml" {
+  name                    = "/${var.project_name}/mulesoft/registration-yaml"
+  description             = "Flex Gateway registration.yaml — generated via 'flexctl registration create'"
+  recovery_window_in_days = 0
+
+  tags = local.common_tags
+}
+
+resource "aws_secretsmanager_secret_version" "flex_registration_yaml" {
+  secret_id     = aws_secretsmanager_secret.flex_registration_yaml.id
+  secret_string = "PLACEHOLDER"
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 module "mulesoft" {
   source = "./modules/mulesoft"
 
-  project_name       = var.project_name
-  cluster_id         = module.ecs_cluster.cluster_id
-  cluster_name       = module.ecs_cluster.cluster_name
-  vpc_id             = module.vpc.vpc_id
-  private_subnet_ids = module.vpc.private_subnet_ids
-  public_subnet_ids  = module.vpc.public_subnet_ids
-  task_sg_id         = module.security_groups.ecs_sg_id
-  alb_sg_id          = module.security_groups.alb_sg_id
-  capacity_provider  = module.ecs_cluster.capacity_provider_name
-  tags               = local.common_tags
+  project_name                 = var.project_name
+  cluster_id                   = module.ecs_cluster.cluster_id
+  cluster_name                 = module.ecs_cluster.cluster_name
+  vpc_id                       = module.vpc.vpc_id
+  private_subnet_ids           = module.vpc.private_subnet_ids
+  public_subnet_ids            = module.vpc.public_subnet_ids
+  task_sg_id                   = module.security_groups.ecs_sg_id
+  alb_sg_id                    = module.security_groups.alb_sg_id
+  capacity_provider            = module.ecs_cluster.capacity_provider_name
+  mule_image                   = var.mule_image
+  registration_yaml_secret_arn = aws_secretsmanager_secret.flex_registration_yaml.arn
+  tags                         = local.common_tags
 }
 
 module "vulnerable_apps" {

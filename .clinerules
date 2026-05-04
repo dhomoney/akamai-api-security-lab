@@ -1,6 +1,6 @@
 # Akamai API Security Lab Environment
 
-Repeatable lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform and configures it via Ansible. Kong OSS and NGINX OSS gateways run and are integrated with a pre-provisioned Noname SaaS tenant. MuleSoft is provisioned in Terraform but disabled in Ansible until a Docker image is available.
+Repeatable lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform and configures it via Ansible. Kong OSS and NGINX OSS (OpenResty) gateways run with Noname sensor plugins baked into custom ECR images. MuleSoft is provisioned in Terraform but disabled in Ansible until a Docker image is available.
 
 **Target environment**: AWS us-east-2, single VPC, ECS with EC2 launch type (t3.small), local Terraform state.
 
@@ -35,6 +35,19 @@ make lint-ansible        # ansible-lint
 
 # Vault management
 make vault-edit          # edit encrypted vault.yml
+
+# Traffic generation (feeds Noname engine for behavioral learning)
+make traffic-install     # install Locust into .venv (once after setup)
+make traffic             # headless traffic — all 4 APIs, Ctrl+C to stop
+make traffic-ui          # Locust web UI at http://localhost:8089
+TRAFFIC_USERS=25 TRAFFIC_RATE=5 make traffic  # tune rate
+
+# Noname sensor plugin installation (run once per lab, requires Docker + integration-files/*.zip)
+make deploy-plugins      # full flow: ECR → build images → apply → provision → plugin config
+# Or step by step:
+make plugin-images       # create ECR repos, build+push images, write terraform/plugin.auto.tfvars
+make apply               # re-apply Terraform so ECS tasks pick up the new images
+make provision-plugins   # push Noname plugin config to Kong; verify NGINX health
 ```
 
 All `make` targets are self-documented: run `make` (no args) to list them.
@@ -48,10 +61,12 @@ terraform/
   main.tf                  # Root module — wires all child modules together
   variables.tf / outputs.tf
   terraform.tfvars.example # Copy to terraform.tfvars and fill in admin_cidr
+  plugin.auto.tfvars       # Written by 'make plugin-images' (gitignored) — ECR URIs + plugin flag
   modules/
     vpc/                   # VPC, public/private subnets, IGW, single NAT GW
     security_groups/       # ALB SG, ECS SG, Noname SG
     ecs_cluster/           # ECS cluster, EC2 launch template, ASG, capacity provider
+    ecr/                   # ECR repos for kong and nginx plugin images
     kong/                  # Kong OSS ECS task + ALB
     nginx/                 # NGINX OSS ECS task + ALB
     mulesoft/              # Mule Runtime ECS task + ALB (license TBD)
@@ -59,6 +74,7 @@ terraform/
 
 ansible/
   site.yml                 # Master playbook — runs all roles in order
+  plugins.yml              # Standalone playbook — configures Noname plugin on Kong
   ansible.cfg              # Uses aws_ec2 dynamic inventory, SSH via keys/lab_key
   vault.yml.example        # Template for secrets — copy to vault.yml, encrypt
   requirements.yml         # Galaxy: amazon.aws, community.general, community.docker
@@ -71,8 +87,24 @@ ansible/
     mulesoft/              # Registers runtime with Anypoint Platform (disabled)
     noname_integration/    # Registers Kong/NGINX integrations via Noname API
 
+docker/
+  kong/Dockerfile          # FROM kong:latest + luarocks install of Noname Kong plugin
+  nginx/Dockerfile         # FROM openresty/openresty:bullseye + Noname Lua scripts
+  nginx/nginx.conf.template # nginx config with Noname Lua hooks; ${APPS_ALB_DNS} substituted at startup
+  nginx/entrypoint.sh      # Runs envsubst then starts OpenResty
+
+integration-files/         # Drop Noname-provided .zip files here (gitignored)
+  noname-security-kong-policy.zip
+  noname-security-nginx-policy.zip
+
 .github/workflows/
   lint.yml                 # PR/push: terraform fmt+validate+tflint, ansible-lint
+
+scripts/
+  kong-tunnel.sh           # SSH tunnel to Kong Admin API via bastion
+  traffic/
+    locustfile.py          # Locust traffic generator — 4 FastHttpUser classes
+    requirements.txt       # locust>=2.20.0
 ```
 
 ## Architecture
@@ -90,6 +122,14 @@ Kong runs in declarative (`KONG_DATABASE=off`) mode. No Postgres. The Ansible `k
 
 ### Noname sensor integration
 The Noname sensor ECS task reads its tenant URL and API key from SSM SecureString parameters (populated by Terraform from `noname_sensor_image`, `noname_tenant_url`, `noname_api_key` variables). The `noname_integration` Ansible role authenticates via `POST /auth/token` (service account `client_id`/`client_secret` → `accessToken` JWT), fetches the engine ID from `GET /api/v3/engines` (response key: `entities[0].id`), then registers Kong (`POST /api/v3/sources/kong`) and NGINX (`POST /api/v3/sources/nginx`) as traffic source integrations. All API calls run from localhost.
+
+### Noname sensor plugins (Kong and NGINX)
+Registering integrations is not enough — each gateway needs a sensor plugin that forwards API traffic to the Noname engine. The plugin is installed by baking it into a custom Docker image, not at runtime:
+
+- **Kong**: `docker/kong/Dockerfile` installs the LuaRocks rock from the zip into `kong:latest`. The task definition adds `KONG_PLUGINS=bundled,nonamesecurity` when `noname_plugin_enabled=true`. The `ansible/plugins.yml` playbook fetches the correct `sourceKey`/`sourceIndex` from `GET /api/v3/sources` and pushes them via the Kong declarative config `/config` endpoint.
+- **NGINX**: `docker/nginx/Dockerfile` builds on `openresty/openresty:bullseye` (which has LuaJIT + lua-nginx-module built in — standard `nginx:latest` does not). The Lua scripts are copied to `/usr/local/openresty/nginx/lua-scripts/`. The `nginx.conf.template` has the Noname hooks baked in; `entrypoint.sh` runs `envsubst` to substitute `${APPS_ALB_DNS}` at container startup.
+- **Chicken-and-egg**: ECR repos must exist before images can be pushed. `make plugin-images` handles this: creates ECR repos via `terraform apply -target module.ecr`, builds and pushes images, then writes `terraform/plugin.auto.tfvars` (gitignored) with the ECR URIs and `noname_plugin_enabled=true`. A subsequent `make apply` picks up the new image references.
+- **Source key mismatch**: The Kong zip ships with hardcoded `NN_SOURCE_KEY` values that differ from the registered integration's `sourceKey`. The `plugins.yml` playbook fetches the correct values dynamically from `GET /api/v3/sources`, making it generic for any team member's tenant.
 
 ### Secrets flow
 - Terraform: Noname credentials go into `terraform.tfvars` (gitignored) and land in SSM SecureString.

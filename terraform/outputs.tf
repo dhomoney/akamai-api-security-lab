@@ -19,7 +19,7 @@ output "nginx_alb_dns" {
 }
 
 output "mulesoft_alb_dns" {
-  description = "MuleSoft runtime ALB DNS name"
+  description = "Flex Gateway ALB DNS name"
   value       = module.mulesoft.alb_dns_name
 }
 
@@ -46,4 +46,19 @@ output "apps_alb_dns" {
 output "app_urls" {
   description = "Internal URLs for each vulnerable app"
   value       = module.vulnerable_apps.app_urls
+}
+
+output "mulesoft_ecr_uri" {
+  description = "ECR repository URI for the Flex Gateway wrapper image"
+  value       = module.ecr.mulesoft_uri
+}
+
+output "kong_ecr_uri" {
+  description = "ECR repository URI for the Kong plugin image"
+  value       = module.ecr.kong_uri
+}
+
+output "nginx_ecr_uri" {
+  description = "ECR repository URI for the NGINX/OpenResty plugin image"
+  value       = module.ecr.nginx_uri
 }

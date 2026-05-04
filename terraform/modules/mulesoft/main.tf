@@ -1,7 +1,6 @@
-# MuleSoft Mule Runtime Engine (self-managed) on ECS.
-# Requires an Anypoint Platform license and credentials supplied via vault.
-# Set MULE_LICENSE_KEY and ANYPOINT_* env vars in the container definition below
-# once the Anypoint org details are confirmed.
+# Anypoint Flex Gateway running as an ECS task in connected mode.
+# The registration.yaml (generated via 'docker run --entrypoint flexctl ... registration create')
+# is stored in Secrets Manager and injected into the container at startup by entrypoint.sh.
 
 resource "aws_lb" "mulesoft" {
   name               = "${var.project_name}-mule-alb"
@@ -21,10 +20,11 @@ resource "aws_lb_target_group" "mulesoft" {
   target_type = "instance"
 
   health_check {
-    path                = "/api/health"
+    path                = "/api/v1/health-check"
     healthy_threshold   = 2
     unhealthy_threshold = 3
     interval            = 30
+    matcher             = "200-499"
   }
 
   tags = var.tags
@@ -39,6 +39,8 @@ resource "aws_lb_listener" "mulesoft_http" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.mulesoft.arn
   }
+
+  tags = var.tags
 }
 
 resource "aws_iam_role" "mulesoft_task_exec" {
@@ -61,6 +63,24 @@ resource "aws_iam_role_policy_attachment" "mulesoft_task_exec" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+resource "aws_iam_policy" "mulesoft_secrets" {
+  name = "${var.project_name}-mule-secrets-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = [var.registration_yaml_secret_arn]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "mulesoft_secrets" {
+  role       = aws_iam_role.mulesoft_task_exec.name
+  policy_arn = aws_iam_policy.mulesoft_secrets.arn
+}
+
 resource "aws_cloudwatch_log_group" "mulesoft" {
   name              = "/ecs/${var.project_name}/mulesoft"
   retention_in_days = 7
@@ -74,20 +94,21 @@ resource "aws_ecs_task_definition" "mulesoft" {
   network_mode             = "bridge"
   execution_role_arn       = aws_iam_role.mulesoft_task_exec.arn
 
-  # TODO: Replace image with your Mule Runtime image once Anypoint license is confirmed.
-  # MuleSoft does not publish an official public Docker image; build and push to ECR.
   container_definitions = jsonencode([
     {
       name      = "mulesoft"
-      image     = "${var.mule_image}"
+      image     = var.mule_image
       essential = true
 
       portMappings = [
         { containerPort = 8081, hostPort = 8081, protocol = "tcp" }
       ]
 
-      environment = [
-        { name = "MULE_ENV", value = "lab" }
+      secrets = [
+        {
+          name      = "FLEX_REGISTRATION_YAML"
+          valueFrom = var.registration_yaml_secret_arn
+        }
       ]
 
       logConfiguration = {
