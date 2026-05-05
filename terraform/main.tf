@@ -163,17 +163,20 @@ module "vulnerable_apps" {
 module "noname" {
   source = "./modules/noname"
 
-  project_name       = var.project_name
-  cluster_id         = module.ecs_cluster.cluster_id
-  cluster_name       = module.ecs_cluster.cluster_name
-  vpc_id             = module.vpc.vpc_id
-  private_subnet_ids = module.vpc.private_subnet_ids
-  task_sg_id         = module.security_groups.noname_sg_id
-  capacity_provider  = module.ecs_cluster.capacity_provider_name
-  kong_admin_url     = module.kong.admin_url
-  nginx_status_url   = module.nginx.status_url
-  mulesoft_api_url   = module.mulesoft.api_url
-  tags               = local.common_tags
+  project_name = var.project_name
+  cluster_id   = module.ecs_cluster.cluster_id
+  cluster_name = module.ecs_cluster.cluster_name
+  aws_region   = var.aws_region
+
+  noname_engine_url             = var.noname_engine_url
+  noname_sniff_source_key       = var.noname_sniff_source_key
+  noname_sniff_source_index     = var.noname_sniff_source_index
+  noname_sniff_source_type      = var.noname_sniff_source_type
+  noname_should_use_ebpf        = var.noname_should_use_ebpf
+  noname_jfrog_credentials_json = var.noname_jfrog_credentials_json
+  noname_sensor_image           = var.noname_sensor_image
+
+  tags = local.common_tags
 }
 
 locals {

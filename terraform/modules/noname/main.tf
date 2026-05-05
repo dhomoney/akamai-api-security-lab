@@ -1,6 +1,17 @@
-# Noname (Akamai API Security) sensor/connector running as an ECS task.
-# The sensor connects outbound to the Noname SaaS tenant and collects API
-# traffic metadata from Kong, NGINX, and MuleSoft via their integration APIs.
+# Noname (Akamai API Security) sensor — deployed as a DaemonSet on the ECS EC2
+# cluster (one task per host). Sniffs traffic on each host's network interfaces
+# (default BPF: tcp and not tcp port 443) and forwards API packet pairs to the
+# Noname engine over TLS.
+#
+# Network mode "host" + PID mode "host" let the sensor see all traffic crossing
+# the host NIC and (with eBPF enabled) hook SSL libraries on neighbouring
+# containers. Linux capabilities NET_ADMIN/NET_RAW/SYS_NICE are required for
+# packet capture; eBPF mode adds SYS_ADMIN/SYS_PTRACE.
+#
+# The sensor image lives in a private Google Cloud Artifact Registry. The
+# Noname deployment script supplies a JSON service-account key that we store
+# in AWS Secrets Manager and reference via the task definition's
+# repositoryCredentials block.
 
 resource "aws_iam_role" "noname_task_exec" {
   name = "${var.project_name}-noname-task-exec-role"
@@ -22,90 +33,113 @@ resource "aws_iam_role_policy_attachment" "noname_task_exec" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-resource "aws_ssm_parameter" "noname_tenant_url" {
-  name  = "/${var.project_name}/noname/tenant_url"
-  type  = "SecureString"
-  value = var.noname_tenant_url
-
-  tags = var.tags
+resource "aws_secretsmanager_secret" "jfrog_credentials" {
+  name        = "/${var.project_name}/noname/jfrog-credentials"
+  description = "Noname sensor image registry credentials (Google Cloud Artifact Registry SA key) from the AWS ECS deployment script"
+  tags        = var.tags
 }
 
-resource "aws_ssm_parameter" "noname_api_key" {
-  name  = "/${var.project_name}/noname/api_key"
-  type  = "SecureString"
-  value = var.noname_api_key
-
-  tags = var.tags
+resource "aws_secretsmanager_secret_version" "jfrog_credentials" {
+  secret_id     = aws_secretsmanager_secret.jfrog_credentials.id
+  secret_string = var.noname_jfrog_credentials_json
 }
 
-resource "aws_iam_policy" "noname_ssm" {
-  name = "${var.project_name}-noname-ssm-policy"
+resource "aws_iam_policy" "noname_secrets" {
+  name = "${var.project_name}-noname-secrets-policy"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
-      Action = ["ssm:GetParameters", "ssm:GetParameter"]
-      Resource = [
-        aws_ssm_parameter.noname_tenant_url.arn,
-        aws_ssm_parameter.noname_api_key.arn
-      ]
+      Effect   = "Allow"
+      Action   = "secretsmanager:GetSecretValue"
+      Resource = aws_secretsmanager_secret.jfrog_credentials.arn
     }]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "noname_ssm" {
+resource "aws_iam_role_policy_attachment" "noname_secrets" {
   role       = aws_iam_role.noname_task_exec.name
-  policy_arn = aws_iam_policy.noname_ssm.arn
+  policy_arn = aws_iam_policy.noname_secrets.arn
 }
 
 resource "aws_cloudwatch_log_group" "noname" {
   name              = "/ecs/${var.project_name}/noname"
   retention_in_days = 7
+  tags              = var.tags
+}
 
-  tags = var.tags
+locals {
+  # eBPF mode needs to read /proc and load BPF programs — extra capabilities
+  # plus bind mounts of the host root and the docker socket. Sniffing-only
+  # mode just needs raw packet capture, no mounts.
+  capabilities_no_ebpf = ["SYS_NICE", "NET_ADMIN", "NET_RAW"]
+  capabilities_ebpf    = concat(local.capabilities_no_ebpf, ["SYS_ADMIN", "SYS_PTRACE"])
+
+  ebpf_volumes = [
+    { name = "host_root", host_path = "/" },
+    { name = "docker_socket", host_path = "/var/run/docker.sock" },
+  ]
+  ebpf_mount_points = [
+    { sourceVolume = "host_root", containerPath = "/host", readOnly = false },
+    { sourceVolume = "docker_socket", containerPath = "/var/run/docker.sock", readOnly = false },
+  ]
 }
 
 resource "aws_ecs_task_definition" "noname" {
-  family                   = "${var.project_name}-noname"
+  family                   = "${var.project_name}-noname-sensor"
   requires_compatibilities = ["EC2"]
-  network_mode             = "bridge"
+  network_mode             = "host"
+  pid_mode                 = "host"
   execution_role_arn       = aws_iam_role.noname_task_exec.arn
 
-  # TODO: Replace image with the Noname connector image provided by Akamai.
-  # Obtain the image from your Noname SaaS tenant's deployment guide.
+  dynamic "volume" {
+    for_each = var.noname_should_use_ebpf ? local.ebpf_volumes : []
+    content {
+      name      = volume.value.name
+      host_path = volume.value.host_path
+    }
+  }
+
   container_definitions = jsonencode([
     {
       name      = "noname-sensor"
       image     = var.noname_sensor_image
+      cpu       = 256
+      memory    = 512
       essential = true
+      user      = "root"
 
-      portMappings = [
-        { containerPort = 8080, hostPort = 8080, protocol = "tcp" }
-      ]
+      repositoryCredentials = {
+        credentialsParameter = aws_secretsmanager_secret.jfrog_credentials.arn
+      }
 
-      secrets = [
-        { name = "NONAME_TENANT_URL", valueFrom = aws_ssm_parameter.noname_tenant_url.arn },
-        { name = "NONAME_API_KEY",    valueFrom = aws_ssm_parameter.noname_api_key.arn }
-      ]
+      entryPoint = var.noname_should_use_ebpf ? ["/sensor/ebpf_entry_point.sh"] : null
 
       environment = [
-        { name = "KONG_ADMIN_URL",   value = var.kong_admin_url },
-        { name = "NGINX_STATUS_URL", value = var.nginx_status_url },
-        { name = "MULESOFT_API_URL", value = var.mulesoft_api_url }
+        { name = "ENGINE_URL",         value = var.noname_engine_url },
+        { name = "SNIFF_SOURCE_TYPE",  value = tostring(var.noname_sniff_source_type) },
+        { name = "SNIFF_SOURCE_INDEX", value = tostring(var.noname_sniff_source_index) },
+        { name = "SNIFF_SOURCE_KEY",   value = var.noname_sniff_source_key },
+        { name = "SHOULD_USE_EBPF",    value = tostring(var.noname_should_use_ebpf) },
+        { name = "LIBS_TO_HOOK",       value = "libssl libcrypto libpthread libc ld" },
       ]
+
+      mountPoints = var.noname_should_use_ebpf ? local.ebpf_mount_points : []
+
+      linuxParameters = {
+        capabilities = {
+          add = var.noname_should_use_ebpf ? local.capabilities_ebpf : local.capabilities_no_ebpf
+        }
+      }
 
       logConfiguration = {
         logDriver = "awslogs"
         options = {
           "awslogs-group"         = aws_cloudwatch_log_group.noname.name
-          "awslogs-region"        = "us-east-2"
+          "awslogs-region"        = var.aws_region
           "awslogs-stream-prefix" = "noname"
         }
       }
-
-      memory = 512
-      cpu    = 256
     }
   ])
 
@@ -113,15 +147,11 @@ resource "aws_ecs_task_definition" "noname" {
 }
 
 resource "aws_ecs_service" "noname" {
-  name            = "${var.project_name}-noname"
-  cluster         = var.cluster_id
-  task_definition = aws_ecs_task_definition.noname.arn
-  desired_count   = 1
-
-  capacity_provider_strategy {
-    capacity_provider = var.capacity_provider
-    weight            = 1
-  }
+  name                = "${var.project_name}-noname-sensor"
+  cluster             = var.cluster_id
+  task_definition     = aws_ecs_task_definition.noname.arn
+  launch_type         = "EC2"
+  scheduling_strategy = "DAEMON"
 
   tags = var.tags
 }

@@ -74,3 +74,50 @@ variable "noname_nginx_source_index" {
   type        = number
   default     = 0
 }
+
+# ── Noname AWS ECS sensor (DaemonSet) — values from your Noname tenant's
+# Settings → Integrations → Traffic Sources → AWS ECS deployment script. ──
+
+variable "noname_engine_url" {
+  description = "Noname engine URL (e.g., https://<tenant>.nonamesec.com/engine)"
+  type        = string
+  default     = ""
+}
+
+variable "noname_sniff_source_key" {
+  description = "Noname sensor SNIFF_SOURCE_KEY from the AWS ECS integration profile"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "noname_sniff_source_index" {
+  description = "Noname sensor SNIFF_SOURCE_INDEX"
+  type        = number
+  default     = 1
+}
+
+variable "noname_sniff_source_type" {
+  description = "Noname sensor SNIFF_SOURCE_TYPE. AWS ECS sensor = 201."
+  type        = number
+  default     = 201
+}
+
+variable "noname_should_use_ebpf" {
+  description = "Enable eBPF for encrypted-traffic sniffing (extra Linux caps + host bind mounts)"
+  type        = bool
+  default     = false
+}
+
+variable "noname_jfrog_credentials_json" {
+  description = "Docker registry credentials JSON ({\"username\":..., \"password\":...}) from the Noname deployment script"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "noname_sensor_image" {
+  description = "Noname sensor image URI from the deployment script"
+  type        = string
+  default     = "us-central1-docker.pkg.dev/noname-artifacts/nns-docker/noname-sensor:3.3.54"
+}

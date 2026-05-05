@@ -28,12 +28,21 @@ admin_cidr         = "YOUR_IP/32"
 # noname_nginx_source_key   = "<written by make provision-plugins>"
 # noname_nginx_source_index = 1
 
-# ── Noname sensor container (optional — not required for gateway plugin mode) ──
+# ── Noname AWS ECS sensor (DaemonSet) — required for Flex Gateway visibility ──
 #
-# The Noname sensor runs as a sidecar ECS task that pulls traffic metadata from
-# the gateways. It requires a proprietary Docker image from Akamai. Leave as-is
-# unless you have obtained the image URI from your Akamai deployment guide.
+# Source: in your Noname tenant, go to
+#   Settings → Integrations → Traffic Sources → Add Integration → AWS ECS tile.
+# Select EC2 (not Fargate), pick your engine, click Create. Noname provides a
+# CloudShell shell script with the values below baked into env vars; copy them
+# here. Without these the sensor module deploys with empty defaults and the
+# ECS task will fail to start.
 #
-# noname_sensor_image = "REPLACE_WITH_NONAME_IMAGE"  # from Akamai deployment guide
-# noname_tenant_url   = "https://yourname-lab.nonamesec.com"
-# noname_api_key      = "REPLACE_WITH_API_KEY"       # from Noname tenant settings
+# noname_engine_url             = "https://<tenant>.nonamesec.com/engine"
+# noname_sniff_source_key       = "<from script ENV: SNIFF_SOURCE_KEY>"
+# noname_sniff_source_index     = 1
+# noname_sniff_source_type      = 201             # AWS ECS sensor type
+# noname_should_use_ebpf        = false           # set true to also sniff TLS-decrypted traffic
+# noname_sensor_image           = "us-central1-docker.pkg.dev/noname-artifacts/nns-docker/noname-sensor:3.3.54"
+# noname_jfrog_credentials_json = <<EOT
+# { "username": "_json_key_base64", "password": "<base64 GCP SA key from script>" }
+# EOT
