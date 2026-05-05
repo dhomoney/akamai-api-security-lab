@@ -14,11 +14,11 @@ variable "app_ports" {
   description = "Map of app name to host port — must match Docker Compose host port mappings"
   type        = map(number)
   default = {
-    crapi = 8080
-    vapi  = 8000
-    vampi = 5000
-    dvga  = 5013
-    pixi  = 8888
+    crapi     = 8080
+    juiceshop = 3000
+    vampi     = 5000
+    dvga      = 5013
+    pixi      = 8888
   }
 }
 

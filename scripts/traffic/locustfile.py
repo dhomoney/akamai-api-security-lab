@@ -29,7 +29,7 @@ class HttpBinUser(FastHttpUser):
 
     host = KONG_BASE
     weight = 3
-    wait_time = between(1, 3)
+    wait_time = between(0.5, 2)
 
     @task(5)
     def get_get(self):
@@ -81,12 +81,26 @@ class VAmPIUser(FastHttpUser):
 
     host = NGINX_BASE
     weight = 2
-    wait_time = between(2, 4)
+    wait_time = between(0.5, 2)
+
+    # Class-level so we only hit /createdb once per locust process even if
+    # many VAmPIUser instances spawn concurrently.
+    _db_initialized = False
 
     def on_start(self):
         self.username = f"user_{uid()}"
         self.password = "LabPass123!"
         self.auth = {}
+
+        if not VAmPIUser._db_initialized:
+            # VAmPI ships with empty SQLite — /createdb seeds the users/books tables.
+            # Without this, every other call returns a 500 ("no such table: users").
+            with self.client.get("/vampi/createdb",
+                                 name="/vampi/createdb (init)",
+                                 catch_response=True) as r:
+                if r.status_code in (200, 404):
+                    r.success()
+            VAmPIUser._db_initialized = True
 
         self.client.post("/vampi/users/v1/register", json={
             "username": self.username,
@@ -98,8 +112,9 @@ class VAmPIUser(FastHttpUser):
             "username": self.username,
             "password": self.password,
         })
+        # VAmPI returns auth_token at the top level (not nested under "data").
         if resp.status_code == 200:
-            token = resp.json().get("data", {}).get("auth_token")
+            token = resp.json().get("auth_token")
             if token:
                 self.auth = {"Authorization": f"Bearer {token}"}
 
@@ -124,17 +139,19 @@ class VAmPIUser(FastHttpUser):
             "password": self.password,
         })
         if resp.status_code == 200:
-            token = resp.json().get("data", {}).get("auth_token")
+            token = resp.json().get("auth_token")
             if token:
                 self.auth = {"Authorization": f"Bearer {token}"}
 
-    @task(1)
-    def delete_book(self):
-        # Random title — expect 404; mark as success so stats stay clean
-        with self.client.delete(f"/vampi/books/v1/{uid()}",
-                                headers=self.auth,
-                                catch_response=True) as r:
-            if r.status_code in (200, 404):
+    @task(2)
+    def get_book_by_title(self):
+        # VAmPI does not implement DELETE on /books/v1/<title> (returns 405).
+        # GET still exercises the path-parameter route surface for Noname.
+        with self.client.get(f"/vampi/books/v1/{uid()}",
+                             name="/vampi/books/v1/{title}",
+                             headers=self.auth,
+                             catch_response=True) as r:
+            if r.status_code in (200, 401, 404):
                 r.success()
 
 
@@ -143,7 +160,7 @@ class DVGAUser(FastHttpUser):
 
     host = NGINX_BASE
     weight = 2
-    wait_time = between(1, 2)
+    wait_time = between(0.5, 2)
 
     @task(4)
     def query_pastes(self):
@@ -179,7 +196,7 @@ class CrAPIUser(FastHttpUser):
 
     host = KONG_BASE
     weight = 1
-    wait_time = between(3, 6)
+    wait_time = between(1, 3)
 
     def on_start(self):
         suffix = uid()
@@ -236,51 +253,136 @@ class CrAPIUser(FastHttpUser):
                         headers=self.auth)
 
 
-class FlexGatewayUser(FastHttpUser):
-    """Hits Anypoint Flex Gateway directly. Routes are configured in Anypoint API
-    Manager — until proxy APIs are wired there, expect 404/503. Traffic still
-    flows through Flex so Noname can observe it once registered as a source.
+_JUICESHOP_OK = (200, 201, 204, 304, 400, 401, 403, 404, 409, 500)
+_JUICESHOP_SEARCH_TERMS = ("apple", "juice", "lemon", "banana", "eggfruit", "raspberry", "melon")
+
+
+class JuiceShopUser(FastHttpUser):
+    """Hits OWASP Juice Shop via the Anypoint Flex Gateway proxy at /shop/*.
+    Mix of unauthenticated SPA, REST, search, login/register, and basket calls
+    so Noname sees a wide API surface to learn from.
     """
 
-    abstract = True  # set by host_for_mule() below to enable only when MULE_BASE is set
-    weight = 1
-    wait_time = between(2, 5)
+    abstract = True
+    weight = 2
+    wait_time = between(0.5, 2)
+
+    @task(4)
+    def index(self):
+        with self.client.get("/shop/", catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
 
     @task(3)
-    def health_check(self):
-        with self.client.get("/api/v1/health-check", catch_response=True) as r:
-            if r.status_code in (200, 404, 503):
+    def app_version(self):
+        with self.client.get("/shop/rest/admin/application-version", catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(3)
+    def app_config(self):
+        with self.client.get("/shop/rest/admin/application-configuration", catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(5)
+    def list_products(self):
+        with self.client.get("/shop/api/Products", catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(5)
+    def get_product(self):
+        pid = random.randint(1, 50)
+        with self.client.get(f"/shop/api/Products/{pid}",
+                             name="/shop/api/Products/{id}",
+                             catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(4)
+    def search_products(self):
+        term = random.choice(_JUICESHOP_SEARCH_TERMS)
+        with self.client.get(f"/shop/rest/products/search?q={term}",
+                             name="/shop/rest/products/search",
+                             catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(3)
+    def list_feedbacks(self):
+        with self.client.get("/shop/api/Feedbacks", catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
                 r.success()
 
     @task(2)
-    def root(self):
-        with self.client.get("/", catch_response=True) as r:
-            if r.status_code in (200, 404, 503):
-                r.success()
-
-    @task(2)
-    def get_users(self):
-        with self.client.get("/api/users", catch_response=True) as r:
-            if r.status_code in (200, 404, 503):
-                r.success()
-
-    @task(2)
-    def get_orders(self):
-        with self.client.get("/api/orders", catch_response=True) as r:
-            if r.status_code in (200, 404, 503):
-                r.success()
-
-    @task(1)
-    def post_order(self):
-        with self.client.post("/api/orders",
-                              json={"product_id": uid(), "quantity": 1},
+    def post_feedback(self):
+        with self.client.post("/shop/api/Feedbacks",
+                              json={
+                                  "comment": f"lab feedback {uid()}",
+                                  "rating": random.randint(1, 5),
+                                  "captchaId": 1,
+                                  "captcha": "wrong",
+                              },
                               catch_response=True) as r:
-            if r.status_code in (200, 201, 404, 503):
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(3)
+    def login_bad(self):
+        with self.client.post("/shop/rest/user/login",
+                              json={
+                                  "email": f"{uid()}@lab.test",
+                                  "password": "wrong",
+                              },
+                              catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(2)
+    def register(self):
+        with self.client.post("/shop/api/Users",
+                              json={
+                                  "email": f"{uid()}@lab.test",
+                                  "password": "P@ssw0rd1!",
+                                  "passwordRepeat": "P@ssw0rd1!",
+                                  "securityQuestion": {"id": 1},
+                                  "securityAnswer": "lab",
+                              },
+                              catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(2)
+    def captcha(self):
+        with self.client.get("/shop/rest/captcha/", catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(2)
+    def list_quantities(self):
+        with self.client.get("/shop/api/Quantitys", catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(2)
+    def list_challenges(self):
+        with self.client.get("/shop/api/Challenges", catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
+                r.success()
+
+    @task(2)
+    def get_basket(self):
+        bid = random.randint(1, 5)
+        with self.client.get(f"/shop/rest/basket/{bid}",
+                             name="/shop/rest/basket/{id}",
+                             catch_response=True) as r:
+            if r.status_code in _JUICESHOP_OK:
                 r.success()
 
 
 if MULE_BASE:
     # Concrete subclass with host set; only registered when MULE_ALB_DNS is provided
-    class _MuleUser(FlexGatewayUser):
+    class _JuiceShopUser(JuiceShopUser):
         abstract = False
         host = MULE_BASE

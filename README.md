@@ -108,7 +108,7 @@ aws secretsmanager put-secret-value \
   --region us-east-2
 ```
 
-The Secrets Manager secret is created by `make apply` (with a placeholder). The above command updates the placeholder with the real value. The ECS task injects the secret as the `FLEX_REGISTRATION_YAML` environment variable, and `docker/mulesoft/entrypoint.sh` writes it to `/etc/mulesoft/flex-gateway/registration.yaml` at container startup.
+The Secrets Manager secret is created by `make apply` (with a placeholder). The above command updates the placeholder with the real value. The ECS task injects the secret as the `FLEX_REGISTRATION_YAML` environment variable, and `docker/mulesoft/entrypoint.sh` writes it to `/etc/mulesoft/flex-gateway/conf.d/registration.yaml` at container startup — this is the path the gateway agent's directory watcher monitors. The base image's actual runtime is `/init` (which sets `FLEX_CONFIG_DIR` and execs `flex-agent`), so the wrapper entrypoint exec's `/init` after writing the file. Because the image runs as a non-root user (uid 65532), the Dockerfile briefly switches to root to `mkdir -p /etc/mulesoft/flex-gateway/conf.d && chown -R 65532:0` it before switching back.
 
 ---
 
@@ -458,7 +458,7 @@ aws secretsmanager put-secret-value \
 
 | Feature | Status |
 |---|---|
-| Anypoint Flex Gateway | ECS task, ALB, and ECR image are fully provisioned, and the MuleSoft policy zip (`integration-files/noname-security-mulesoft-policy.zip`) has been obtained. Requires `registration.yaml` stored in Secrets Manager. Pending: add an automatic `POST /api/v3/sources/mulesoft` task to `ansible/roles/noname_integration/tasks/main.yml`, and create proxy APIs in Anypoint API Manager. The source can also be registered manually in the Noname UI in the meantime. |
+| Anypoint Flex Gateway | ECS task, ALB, and ECR image are fully provisioned. The MuleSoft policy zip (`integration-files/noname-security-mulesoft-policy.zip`) has been obtained. The wrapper image now exec's `/init` (the base image's actual runtime — `flexctl` is a CLI tool with no `run` subcommand) and writes registration.yaml into `conf.d/`. ECS service uses `health_check_grace_period_seconds = 600` to give the gateway 10 minutes to register with Anypoint before health checks (capped at matcher `200-499` by AWS) start replacing tasks; this matters because connected-mode envoy has no listeners until a proxy API is deployed from API Manager, and so returns 502 until then. **Open issue**: the agent currently rejects the file with `cannot unmarshal string into Go value of type engine.resource`, which keeps the gateway in **Not running** in Anypoint. The diagnostic entrypoint (env-var byte count, file size/lines, first 3 lines logged to stderr) is in place to pinpoint root cause. Pending: resolve the registration parsing error, add an automatic `POST /api/v3/sources/mulesoft` task to `ansible/roles/noname_integration/tasks/main.yml`, and create proxy APIs in Anypoint API Manager. |
 | Noname sensor container | Requires an image URI from your Akamai deployment guide. Not needed for gateway plugin mode — the plugins send traffic directly. |
 | HTTPS / TLS | ALB listeners are HTTP only. Add ACM certificates and HTTPS listeners for TLS-in-transit testing scenarios. |
 | Remote Terraform state | State is stored locally. For shared team use, configure an S3 + DynamoDB backend in `terraform/main.tf`. |

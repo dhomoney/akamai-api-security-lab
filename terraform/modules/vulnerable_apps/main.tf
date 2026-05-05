@@ -120,11 +120,11 @@ resource "aws_lb" "apps" {
 
 locals {
   apps = {
-    crapi = { port = 8080, health_path = "/" }
-    vapi  = { port = 8000, health_path = "/" }
-    vampi = { port = 5000, health_path = "/" }
-    dvga  = { port = 5013, health_path = "/" }
-    pixi  = { port = 8888, health_path = "/" }
+    crapi     = { port = 8080, health_path = "/" }
+    juiceshop = { port = 3000, health_path = "/" }
+    vampi     = { port = 5000, health_path = "/" }
+    dvga      = { port = 5013, health_path = "/" }
+    pixi      = { port = 8888, health_path = "/" }
   }
 }
 

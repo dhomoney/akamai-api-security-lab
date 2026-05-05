@@ -19,6 +19,18 @@
     mode: "0755"
     timeout: 60
 
+- name: Tear down legacy vapi stack (one-time cleanup; image was empty and replaced by Juice Shop)
+  ansible.builtin.shell: |
+    if [ -f /opt/apps/vapi/docker-compose.yml ]; then
+      cd /opt/apps/vapi && /usr/local/bin/docker-compose down -v --remove-orphans || true
+      rm -rf /opt/apps/vapi
+      echo "removed"
+    fi
+  args:
+    executable: /bin/bash
+  register: vapi_cleanup
+  changed_when: "'removed' in vapi_cleanup.stdout"
+
 - name: Create app directories
   ansible.builtin.file:
     path: "/opt/apps/{{ item }}"
@@ -27,7 +39,7 @@
     mode: "0755"
   loop:
     - crapi
-    - vapi
+    - juiceshop
     - vampi
     - dvga
     - pixi
@@ -40,7 +52,7 @@
     mode: "0644"
   loop:
     - crapi
-    - vapi
+    - juiceshop
     - vampi
     - dvga
     - pixi
@@ -52,7 +64,7 @@
     chdir: "/opt/apps/{{ item }}"
   loop:
     - crapi
-    - vapi
+    - juiceshop
     - vampi
     - dvga
     - pixi

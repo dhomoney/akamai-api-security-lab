@@ -16,8 +16,8 @@ AWS_REGION    ?= us-east-2
 PROJECT_NAME  ?= akamai-lab
 TRAFFIC_DIR   := scripts/traffic
 LOCUST        := $(VENV_ABS)/bin/locust
-TRAFFIC_USERS ?= 10
-TRAFFIC_RATE  ?= 2
+TRAFFIC_USERS ?= 50
+TRAFFIC_RATE  ?= 5
 
 .DEFAULT_GOAL := help
 .PHONY: help setup install-terraform keys init plan apply provision provision-check deploy destroy \
@@ -220,10 +220,12 @@ traffic-install: ## Install Locust into .venv for traffic generation
 	$(PIP) install -r $(TRAFFIC_DIR)/requirements.txt
 
 traffic: _tf_outputs ## Run headless traffic generator against lab APIs (Ctrl+C to stop)
+	# NOTE: --host is intentionally omitted. Locust's CLI --host overrides the
+	# per-User host= attribute (Kong / NGINX / Mulesoft), which sends every
+	# request to the same gateway and produces 100% 404s on the wrong routes.
 	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/locustfile.py \
-	  --host http://$(KONG_ALB_DNS) \
 	  --users $(TRAFFIC_USERS) \
 	  --spawn-rate $(TRAFFIC_RATE) \
 	  --headless
@@ -231,5 +233,4 @@ traffic: _tf_outputs ## Run headless traffic generator against lab APIs (Ctrl+C 
 traffic-ui: _tf_outputs ## Launch Locust web UI at http://localhost:8089
 	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
 	$(LOCUST) \
-	  --locustfile $(TRAFFIC_DIR)/locustfile.py \
-	  --host http://$(KONG_ALB_DNS)
+	  --locustfile $(TRAFFIC_DIR)/locustfile.py

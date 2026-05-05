@@ -20,9 +20,9 @@ resource "aws_lb_target_group" "mulesoft" {
   target_type = "instance"
 
   health_check {
-    path                = "/api/v1/health-check"
+    path                = "/"
     healthy_threshold   = 2
-    unhealthy_threshold = 3
+    unhealthy_threshold = 5
     interval            = 30
     matcher             = "200-499"
   }
@@ -129,10 +129,11 @@ resource "aws_ecs_task_definition" "mulesoft" {
 }
 
 resource "aws_ecs_service" "mulesoft" {
-  name            = "${var.project_name}-mulesoft"
-  cluster         = var.cluster_id
-  task_definition = aws_ecs_task_definition.mulesoft.arn
-  desired_count   = 1
+  name                              = "${var.project_name}-mulesoft"
+  cluster                           = var.cluster_id
+  task_definition                   = aws_ecs_task_definition.mulesoft.arn
+  desired_count                     = 1
+  health_check_grace_period_seconds = 600
 
   capacity_provider_strategy {
     capacity_provider = var.capacity_provider

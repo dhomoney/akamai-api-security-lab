@@ -5,7 +5,7 @@
     chdir: "/opt/apps/{{ item }}"
   loop:
     - crapi
-    - vapi
+    - juiceshop
     - vampi
     - dvga
     - pixi

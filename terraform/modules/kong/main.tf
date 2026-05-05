@@ -15,8 +15,13 @@ resource "aws_lb_target_group" "kong_proxy" {
   vpc_id      = var.vpc_id
   target_type = "instance"
 
+  # Kong's proxy port returns 404 to any unmapped path. /status only exists on
+  # the Admin API (port 8001), so we accept any 2xx-4xx response here as proof
+  # the proxy is reachable. Without this matcher ECS perpetually replaces
+  # tasks because every health probe sees 404 and marks the target unhealthy.
   health_check {
-    path                = "/status"
+    path                = "/"
+    matcher             = "200-499"
     healthy_threshold   = 2
     unhealthy_threshold = 3
     interval            = 30

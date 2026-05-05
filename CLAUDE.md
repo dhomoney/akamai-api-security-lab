@@ -94,8 +94,8 @@ docker/
   nginx/Dockerfile         # FROM openresty/openresty:bullseye + Noname Lua scripts; patches prevention.lua
   nginx/nginx.conf.template # nginx config with Noname Lua hooks; ${APPS_ALB_DNS} substituted at startup
   nginx/entrypoint.sh      # Runs envsubst, patches NN_SOURCE_KEY/NN_SOURCE_INDEX, starts OpenResty
-  mulesoft/Dockerfile      # FROM mulesoft/flex-gateway:latest; uses COPY --chmod=755 (not RUN chmod — image runs as non-root)
-  mulesoft/entrypoint.sh   # Writes FLEX_REGISTRATION_YAML env var to registration.yaml, then runs flexctl
+  mulesoft/Dockerfile      # FROM mulesoft/flex-gateway:latest; uses COPY --chmod=755 (not RUN chmod); briefly USER root to mkdir+chown conf.d for the nonroot runtime user (uid 65532)
+  mulesoft/entrypoint.sh   # Writes FLEX_REGISTRATION_YAML env var to /etc/mulesoft/flex-gateway/conf.d/registration.yaml, logs diagnostics to stderr, then exec's /init
 
 integration-files/         # Drop Noname-provided .zip files here (gitignored)
   noname-security-kong-policy.zip
@@ -138,7 +138,17 @@ Registering integrations is not enough — each gateway needs a sensor plugin th
 - **Source key mismatch**: The Kong zip ships with hardcoded `NN_SOURCE_KEY` values that differ from the registered integration's `sourceKey`. The `plugins.yml` playbook fetches the correct values dynamically from `GET /api/v3/sources`, making it generic for any team member's tenant.
 
 ### Anypoint Flex Gateway (MuleSoft)
-Flex Gateway runs in connected mode. The `registration.yaml` (generated via `docker run --entrypoint flexctl mulesoft/flex-gateway registration create ...`) is stored in AWS Secrets Manager at `/${project_name}/mulesoft/registration-yaml`. Terraform creates the secret with a placeholder value and a `lifecycle { ignore_changes = [secret_string] }` block so subsequent applies do not overwrite the real value. The ECS task injects it as `FLEX_REGISTRATION_YAML`; `docker/mulesoft/entrypoint.sh` writes it to `/etc/mulesoft/flex-gateway/registration.yaml` and then runs `flexctl run`. The task execution role has `secretsmanager:GetSecretValue` on that specific secret ARN.
+Flex Gateway runs in connected mode. The `registration.yaml` (generated via `docker run --entrypoint flexctl mulesoft/flex-gateway registration create ...`) is stored in AWS Secrets Manager at `/${project_name}/mulesoft/registration-yaml`. Terraform creates the secret with a placeholder value and a `lifecycle { ignore_changes = [secret_string] }` block so subsequent applies do not overwrite the real value. The ECS task injects it as `FLEX_REGISTRATION_YAML`; `docker/mulesoft/entrypoint.sh` writes it to `/etc/mulesoft/flex-gateway/conf.d/registration.yaml` and then `exec /init`. The task execution role has `secretsmanager:GetSecretValue` on that specific secret ARN.
+
+**Wrapper image plumbing — preserve these or the gateway breaks:**
+- The base image runs as non-root (uid 65532) and `/etc/mulesoft/flex-gateway/` is root-owned, so a plain `mkdir`/write inside the entrypoint fails with `Permission denied`. The Dockerfile briefly `USER root` to `mkdir -p /etc/mulesoft/flex-gateway/conf.d && chown -R 65532:0 /etc/mulesoft/flex-gateway/conf.d`, then switches back to `USER 65532` before copying the entrypoint.
+- The actual gateway runtime is `/init` — a small script at the image root that exports `FLEX_CONFIG_DIR=/etc/mulesoft/flex-gateway/conf.d:/usr/local/share/mulesoft/flex-gateway/conf.d` (colon-separated list of directories the agent watches) and execs `/usr/local/bin/flex-agent`. Earlier attempts used `exec flexctl run`, which fails because `flexctl` is just a CLI tool with no `run` subcommand.
+- The write target must be inside one of the `FLEX_CONFIG_DIR` paths or the agent's directory watcher won't pick it up. We use `conf.d/registration.yaml` (the first entry, also the writable one).
+- The entrypoint logs the env-var byte count, the resulting file size and line count, and the first 3 lines to stderr — these show up in CloudWatch alongside the agent output and are the primary tool for debugging registration parsing.
+
+**ECS service tuning:**
+- `aws_ecs_service.mulesoft` sets `health_check_grace_period_seconds = 600`. In connected mode envoy has zero listeners until a proxy API is deployed from API Manager, so the gateway returns 502 on the ALB health check during startup. Without the 10-min grace window, ECS replaces the task before the agent has time to register with Anypoint and receive listener configuration.
+- `aws_lb_target_group.mulesoft` health check uses `path = "/"`, `matcher = "200-499"`, `unhealthy_threshold = 5`. AWS rejects matchers above 499 (so we cannot accept the 502 directly), which is why the grace period is the load-bearing piece during startup.
 
 To update `registration.yaml` without touching Terraform:
 ```bash
@@ -155,6 +165,7 @@ aws secretsmanager put-secret-value \
 ## Known TODOs / Incomplete Areas
 
 - **Flex Gateway Noname source**: Flex Gateway ECS task and image build are complete; the MuleSoft policy zip is now in `integration-files/noname-security-mulesoft-policy.zip`. Source can be registered manually in the Noname UI today. Pending: (1) add `POST /api/v3/sources/mulesoft` registration task to `ansible/roles/noname_integration/tasks/main.yml`, (2) create proxy APIs in Anypoint API Manager.
+- **Flex Gateway registration.yaml parsing**: gateway agent currently rejects the file the wrapper writes with `error getting valid resources from file: /etc/mulesoft/flex-gateway/conf.d/registration.yaml; cause: cannot unmarshal string into Go value of type engine.resource`, which keeps the gateway in **Not running** in Anypoint. The Secrets Manager content matches the local `registration.yaml` byte-for-byte when fetched directly, so the suspicion is something in the env-var → file path. The diagnostic entrypoint (env byte count, file size/lines, first 3 lines logged to stderr) is in place — next time the wrapper runs, those log lines will pinpoint whether the issue is missing newlines, a leading scalar wrapper, or something else.
 - **Noname sensor image**: Obtain the connector image URI from your Akamai/Noname tenant deployment guide. Set `noname_sensor_image` in `terraform.tfvars`.
 - **HTTPS / TLS**: ALB listeners are HTTP only. Add ACM certificate + HTTPS listeners for any scenario requiring TLS-in-transit testing.
 
