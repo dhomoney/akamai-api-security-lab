@@ -24,7 +24,7 @@ Internet → ALB (public subnets)
               ├── crAPI       :8080   OWASP crAPI vulnerable app
               ├── Pixi        :8888   go-httpbin (stateless REST)
               ├── VAmPI       :5000   Flask/SQLite vulnerable REST API
-              ├── DVGA        :5013   Django vulnerable GraphQL API
+              ├── DVGA        :5013   Flask/Graphene vulnerable GraphQL API
               └── Juice Shop  :3000   OWASP Juice Shop (behind Flex Gateway proxy)
 ```
 
@@ -110,6 +110,33 @@ aws secretsmanager put-secret-value \
 ```
 
 The Secrets Manager secret is created by `make apply` (with a placeholder). The above command updates the placeholder with the real value. The ECS task injects the secret as the `FLEX_REGISTRATION_YAML` environment variable, and `docker/mulesoft/entrypoint.sh` writes it to `/etc/mulesoft/flex-gateway/conf.d/registration.yaml` at container startup — this is the path the gateway agent's directory watcher monitors. The base image's actual runtime is `/init` (which sets `FLEX_CONFIG_DIR` and execs `flex-agent`), so the wrapper entrypoint exec's `/init` after writing the file. Because the image runs as a non-root user (uid 65532), the Dockerfile briefly switches to root to `mkdir -p /etc/mulesoft/flex-gateway/conf.d && chown -R 65532:0` it before switching back.
+
+---
+
+## Anypoint API Manager — Juice Shop proxy API
+
+Once Flex Gateway is registered in connected mode, envoy comes up with **zero listeners** and the gateway returns `502 Bad Gateway` on every request until you deploy a proxy API to it from Anypoint API Manager. Without this step the `/shop/` route does not work, and the `lab-aws-ecs` Sensor source has no Flex Gateway traffic to capture.
+
+This is a one-time, manual step in the Anypoint UI (the lab does not automate it):
+
+1. In Anypoint Platform, switch to the environment where your Flex Gateway is registered.
+2. Open **API Manager** → **Add API** → **Add new API** → **Add proxy**.
+3. Configure the proxy:
+   - **Name**: e.g., `lab-juiceshop-proxy`.
+   - **Implementation URI**: the internal apps ALB on Juice Shop's port. Get it from `cd terraform && terraform output apps_alb_dns` and append `:3000`. Example: `http://internal-yourname-akamai-lab-apps-int-alb-…elb.amazonaws.com:3000`.
+   - **Downstream Port**: `8081` — **must match** the Flex Gateway container's `containerPort`/`hostPort`. A mismatch produces 502s with no other obvious clue.
+   - **Path**: `/shop/`.
+4. Save and deploy to your registered Flex Gateway runtime. Anypoint pushes the configuration to the connected gateway within 30 seconds.
+
+Verify:
+
+```bash
+MULE_ALB=$(cd terraform && terraform output -raw mulesoft_alb_dns)
+curl -s "http://${MULE_ALB}/shop/api/Products" | head -c 120
+# → Juice Shop products JSON
+```
+
+Until the proxy API deploys, this curl returns `<title>502 Bad Gateway</title>` from envoy.
 
 ---
 
@@ -280,8 +307,12 @@ curl -s http://${NGINX_ALB}/vampi/createdb
 
 # Smoke test each route
 curl -s http://${KONG_ALB}/pixi/uuid                 # → {"uuid": "..."}
-curl -s http://${NGINX_ALB}/vampi/users/v1           # → {"data": {"users": [...]}}
+curl -s http://${NGINX_ALB}/vampi/users/v1           # → {"users": [...]}
 curl -s -o /dev/null -w "%{http_code}" http://${KONG_ALB}/crapi/  # → 200
+
+# Flex Gateway (only if the Anypoint proxy API is deployed — see "Anypoint API Manager" section)
+MULE_ALB=$(cd terraform && terraform output -raw mulesoft_alb_dns)
+curl -s -o /dev/null -w "%{http_code}" http://${MULE_ALB}/shop/api/Products  # → 200, or 502 if proxy not yet deployed
 
 # Confirm Kong has the plugin and all three routes
 curl -s http://${KONG_ALB}:8001/plugins | python3 -c \
@@ -315,22 +346,34 @@ make traffic
 # Or launch the Locust web UI at http://localhost:8089 for interactive control
 make traffic-ui
 
-# Increase concurrency
-TRAFFIC_USERS=25 TRAFFIC_RATE=5 make traffic
+# Tune volume (defaults are 50 users / 5 spawn-rate)
+TRAFFIC_USERS=100 TRAFFIC_RATE=10 make traffic
 ```
 
-**Step 2 — OWASP API Top 10 attacks (`make traffic-owasp`).** Once the baseline is trained, fire attacks across the same gateways to populate Noname's Runtime tab with real detection events — BOLA, broken auth, mass assignment, BFLA, SSRF, GraphQL abuse, oversized payloads, and inventory probing. Covers 9 of the 10 OWASP API 2023 categories (API1, API2, API3, API4, API5, API7, API8, API9; API6 and API10 are not in scope). Each attacker class targets a specific app: crAPI via Kong, VAmPI and DVGA via NGINX, Juice Shop via Flex Gateway (only when `MULE_ALB_DNS` is set), Pixi via Kong.
+**Step 2 — OWASP API Top 10 attacks (`make traffic-owasp`).** Once the baseline has trained, fire attacks across the same gateways so Noname's Issues tab populates with detection events. Five attacker classes, one per app:
+
+| Attacker | Gateway | OWASP focus |
+|---|---|---|
+| `CrAPIAttacker` | Kong `/crapi/` | API1 BOLA on user/profile and orders, API2 credential stuffing, API3 mass-assignment signup, API5 BFLA on `/workshop/api/management/*`, API7 SSRF via `contact_mechanic.mechanic_api`, API9 inventory probing on `/v1/` |
+| `VAmPIAttacker` | NGINX `/vampi/` | API2 SQL injection on `/users/v1/login`, API1 BOLA on `/users/v1/{username}`, API5 BFLA on `/_debug`, API3 mass-assignment register |
+| `DVGAAttacker` | NGINX `/dvga/` | API8 schema introspection, API4 deeply-nested resolver DoS, API2 batched login mutation stuffing, API3 BOPLA via `createPaste.ownerId`, API1 paste-id walking |
+| `JuiceShopAttacker` | Flex Gateway `/shop/` | API2 `' OR 1=1--` login SQLi, API1 BOLA on `Users/{id}` and `basket/{id}`, API3 role=admin mass assignment on register, API5 BFLA on `/authentication-details`, API7 SSRF via `/profile/image/url`, API8 `/api-docs` recon, API9 path traversal on `/shop/ftp/...`, XSS in feedback comments |
+| `PixiAttacker` | Kong `/pixi/` | API4 256 KB oversized POST and `/pixi/delay/10` worker tie-up, API8 method bypass (TRACE/OPTIONS/PATCH on `/anything/admin`), header smuggling on `/pixi/headers` |
+
+Coverage spans 9 of the 10 OWASP API Security 2023 categories. **API6** (Unrestricted Access to Sensitive Business Flows) and **API10** (Unsafe Consumption of APIs) are out of scope for this lab.
 
 ```bash
 # Headless attack run — Ctrl+C to stop
 make traffic-owasp
 
-# Web UI variant at http://localhost:8089
+# Web UI variant at http://localhost:8089 — interactive control over which classes fire
 make traffic-owasp-ui
 
-# Tune rate (defaults are intentionally lower than baseline — demo cadence)
+# Tune volume (defaults are 10 users / 2 spawn — intentionally lower than baseline)
 ATTACK_USERS=20 ATTACK_RATE=4 make traffic-owasp
 ```
+
+In the Noname UI, watch the **Issues** / **Runtime** tab on `lab-kong`, `lab-nginx`, and `lab-aws-ecs` while the run progresses — BOLA walks, credential stuffing, and SQL injection are typically the first patterns to surface. Every attack task wraps `catch_response` and accepts the full 200–503 range as success, so locust's stats stay focused on network reachability rather than the HTTP errors the gateway/app correctly returns.
 
 ---
 
@@ -343,12 +386,14 @@ All traffic should go through the gateway URLs — not directly to the apps — 
 | crAPI | Kong | `/crapi/` | Full web UI + REST API. Registration requires MailHog for email verification (see below). |
 | Pixi (go-httpbin) | Kong | `/pixi/` | Stateless httpbin API. No auth required. Good for basic request/response exploration. |
 | VAmPI | NGINX | `/vampi/` | Flask REST API with SQLite. OWASP API Top 10 vulnerabilities. Must run `createdb` first. |
-| DVGA | NGINX | `/dvga/` | Django GraphQL API. Endpoint at `/dvga/graphql`. Vulnerable to introspection and injection. |
+| DVGA | NGINX | `/dvga/` | Flask + Graphene GraphQL API. Endpoint at `/dvga/graphql`. Vulnerable to introspection and injection. |
 | Juice Shop | Flex Gateway | `/shop/` | OWASP Juice Shop. Reached via the Anypoint Flex Gateway proxy API; Sensor (DaemonSet) provides the Noname coverage for this path. |
 
 ### VAmPI — initialize database
 
-After every fresh deployment, run this once before making any API calls:
+VAmPI ships with an empty SQLite database. The first call to any `/users/v1/*` endpoint returns `500 Internal Server Error` with `no such table: users` until you hit `/createdb` once.
+
+`make traffic` handles this automatically — `VAmPIUser.on_start()` calls `/vampi/createdb` once per Locust process before any other VAmPI tasks run, gated by a class-level `_db_initialized` flag. Only run the curl manually if you are smoke-testing VAmPI directly:
 
 ```bash
 curl -s http://${NGINX_ALB}/vampi/createdb
@@ -477,9 +522,11 @@ aws secretsmanager put-secret-value \
 |---|---|---|
 | Any AWS CLI / Terraform / Ansible AWS call fails with "Token has expired" or "SSO" error | AWS SSO session expired | `aws sso login --profile SA_Standard_Access-491489166083` |
 | Kong shows 0 routes, or appears offline in Noname | ECS task restarted and lost in-memory config | `make provision-plugins` |
-| `/vampi/users/v1` returns an HTML page with `no such table: users` | VAmPI SQLite DB not initialized | `curl -s http://${NGINX_ALB}/vampi/createdb` |
+| `/vampi/users/v1` returns an HTML page with `no such table: users` | VAmPI SQLite DB not initialized | `curl -s http://${NGINX_ALB}/vampi/createdb` (or run `make traffic` — locust does it on first start) |
 | `make provision-plugins` fails immediately with "Connection refused" to Noname tenant | Transient network error to Noname SaaS | Re-run the command — almost always a one-off |
 | NGINX returns 500 for `/vampi/` or `/dvga/`, or Kong returns 500 for `/crapi/*` | Unpatched gateway image deployed (Noname plugin `prevention.lua` bug — `bad argument #1 to 'next' (table expected, got string)` in Kong/NGINX logs) | Rebuild and push the patched images: `make plugin-images && make apply` |
+| `/shop/*` returns `502 Bad Gateway` from envoy | Flex Gateway is registered but no proxy API has been deployed to it from Anypoint API Manager | Deploy a proxy API in Anypoint API Manager pointing at the apps ALB on port 3000 with **Downstream Port 8081** — see "Anypoint API Manager — Juice Shop proxy API" |
+| `lab-aws-ecs` source stays in `PENDING` with 0 requests | Sensor task can't fit on an EC2 host (insufficient memory) — usually after a config change pushed memory above the per-host headroom | Check `aws ecs describe-services …noname-sensor`. Either trim a gateway task's memory or scale the ASG up; sensors are a `DAEMON` schedule so one needs to fit on every host. |
 | `docker: permission denied` | Docker group not active in current shell | Log out and back in, or run `newgrp docker` |
 | `make provision-plugins` runs but Kong still has 0 routes | Ran `make provision-plugins` from wrong directory causing bad terraform output | Run directly from the repo root; the Makefile handles the `cd terraform` internally |
 
