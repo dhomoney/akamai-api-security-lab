@@ -18,11 +18,13 @@ TRAFFIC_DIR   := scripts/traffic
 LOCUST        := $(VENV_ABS)/bin/locust
 TRAFFIC_USERS ?= 50
 TRAFFIC_RATE  ?= 5
+ATTACK_USERS  ?= 10
+ATTACK_RATE   ?= 2
 
 .DEFAULT_GOAL := help
 .PHONY: help setup install-terraform keys init plan apply provision provision-check deploy destroy \
         lint lint-tf lint-ansible vault-init vault-create vault-edit clean _tf_outputs _ssh_cfg _my_ip \
-        traffic-install traffic traffic-ui \
+        traffic-install traffic traffic-ui traffic-owasp traffic-owasp-ui \
         _aws_account apply-ecr ecr-login build-plugin-images push-plugin-images plugin-images \
         provision-plugins deploy-plugins
 
@@ -234,3 +236,22 @@ traffic-ui: _tf_outputs ## Launch Locust web UI at http://localhost:8089
 	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/locustfile.py
+
+traffic-owasp: _tf_outputs ## Run OWASP API Top 10 attacks against the lab APIs (Ctrl+C to stop)
+	# Demonstrates Noname's runtime attack detection. Mix of BOLA, broken auth,
+	# mass assignment, BFLA, SSRF, GraphQL abuse, path traversal, and oversized
+	# payload attacks across all 5 vulnerable apps. Run AFTER 'make traffic'
+	# has built a behavioural baseline (~30 min) so attacks show as anomalies
+	# rather than seeded normal patterns. Like 'make traffic', --host is
+	# omitted so the per-User host attribute is honoured.
+	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
+	$(LOCUST) \
+	  --locustfile $(TRAFFIC_DIR)/attackfile.py \
+	  --users $(ATTACK_USERS) \
+	  --spawn-rate $(ATTACK_RATE) \
+	  --headless
+
+traffic-owasp-ui: _tf_outputs ## Launch Locust web UI for the OWASP attack file at http://localhost:8089
+	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
+	$(LOCUST) \
+	  --locustfile $(TRAFFIC_DIR)/attackfile.py
