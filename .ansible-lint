@@ -1,0 +1,19 @@
+---
+# Lab-specific ansible-lint config.
+#
+# Skipped rules and why:
+#
+# var-naming[no-role-prefix] — Several variables are intentionally NOT
+#   role-prefixed because they are shared across roles via the Makefile's
+#   --extra-vars (apps_alb_dns, kong_admin_url, nginx_status_url,
+#   mulesoft_alb_dns, mulesoft_api_url) or come from a shared encrypted
+#   ansible/vault.yml (vault_noname_tenant_url, vault_noname_client_id,
+#   vault_noname_client_secret). Renaming them would force role-internal
+#   indirection without making the lab any clearer.
+#
+# yaml[colons] — defaults/main.yml files in several roles align values
+#   under multi-line keys for readability. The rule treats this as "too
+#   many spaces after colon"; we treat it as desirable.
+skip_list:
+  - var-naming[no-role-prefix]
+  - yaml[colons]

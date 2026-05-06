@@ -1,5 +1,5 @@
 ---
-- name: reload nginx
+- name: Reload nginx
   community.docker.docker_container_exec:
     container: nginx
     command: nginx -s reload

@@ -20,5 +20,11 @@
 - name: Flex Gateway status
   ansible.builtin.debug:
     msg: >-
-      Flex Gateway ALB responding at http://{{ mulesoft_alb_dns }} (HTTP {{ mule_health.status }}).
-      {% if mule_health.status == 502 %}Status 502 means envoy has no listeners yet — deploy a proxy API to this gateway from Anypoint API Manager to start serving traffic.{% else %}Check Anypoint Runtime Manager to confirm gateway shows as Connected.{% endif %}
+      Flex Gateway ALB responding at http://{{ mulesoft_alb_dns }}
+      (HTTP {{ mule_health.status }}).
+      {% if mule_health.status == 502 %}
+      Status 502 means envoy has no listeners yet — deploy a proxy API
+      to this gateway from Anypoint API Manager to start serving traffic.
+      {% else %}
+      Check Anypoint Runtime Manager to confirm gateway shows as Connected.
+      {% endif %}

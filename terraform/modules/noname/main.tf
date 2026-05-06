@@ -116,12 +116,12 @@ resource "aws_ecs_task_definition" "noname" {
       entryPoint = var.noname_should_use_ebpf ? ["/sensor/ebpf_entry_point.sh"] : null
 
       environment = [
-        { name = "ENGINE_URL",         value = var.noname_engine_url },
-        { name = "SNIFF_SOURCE_TYPE",  value = tostring(var.noname_sniff_source_type) },
+        { name = "ENGINE_URL", value = var.noname_engine_url },
+        { name = "SNIFF_SOURCE_TYPE", value = tostring(var.noname_sniff_source_type) },
         { name = "SNIFF_SOURCE_INDEX", value = tostring(var.noname_sniff_source_index) },
-        { name = "SNIFF_SOURCE_KEY",   value = var.noname_sniff_source_key },
-        { name = "SHOULD_USE_EBPF",    value = tostring(var.noname_should_use_ebpf) },
-        { name = "LIBS_TO_HOOK",       value = "libssl libcrypto libpthread libc ld" },
+        { name = "SNIFF_SOURCE_KEY", value = var.noname_sniff_source_key },
+        { name = "SHOULD_USE_EBPF", value = tostring(var.noname_should_use_ebpf) },
+        { name = "LIBS_TO_HOOK", value = "libssl libcrypto libpthread libc ld" },
       ]
 
       mountPoints = var.noname_should_use_ebpf ? local.ebpf_mount_points : []

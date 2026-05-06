@@ -13,10 +13,10 @@ resource "aws_internet_gateway" "this" {
 }
 
 resource "aws_subnet" "public" {
-  count             = length(var.azs)
-  vpc_id            = aws_vpc.this.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
-  availability_zone = var.azs[count.index]
+  count                   = length(var.azs)
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone       = var.azs[count.index]
   map_public_ip_on_launch = true
 
   tags = merge(var.tags, { Name = "${var.project_name}-public-${var.azs[count.index]}", Tier = "public" })

@@ -1,5 +1,5 @@
 ---
-- name: restart apps
+- name: Restart apps
   ansible.builtin.command:
     cmd: docker-compose restart
     chdir: "/opt/apps/{{ item }}"

@@ -97,20 +97,20 @@ module "kong" {
 module "nginx" {
   source = "./modules/nginx"
 
-  project_name          = var.project_name
-  cluster_id            = module.ecs_cluster.cluster_id
-  cluster_name          = module.ecs_cluster.cluster_name
-  vpc_id                = module.vpc.vpc_id
-  private_subnet_ids    = module.vpc.private_subnet_ids
-  public_subnet_ids     = module.vpc.public_subnet_ids
-  task_sg_id            = module.security_groups.ecs_sg_id
-  alb_sg_id             = module.security_groups.alb_sg_id
-  capacity_provider     = module.ecs_cluster.capacity_provider_name
-  nginx_image           = var.nginx_image
-  apps_alb_dns          = module.vulnerable_apps.apps_alb_dns
-  noname_source_key     = var.noname_nginx_source_key
-  noname_source_index   = var.noname_nginx_source_index
-  tags                  = local.common_tags
+  project_name        = var.project_name
+  cluster_id          = module.ecs_cluster.cluster_id
+  cluster_name        = module.ecs_cluster.cluster_name
+  vpc_id              = module.vpc.vpc_id
+  private_subnet_ids  = module.vpc.private_subnet_ids
+  public_subnet_ids   = module.vpc.public_subnet_ids
+  task_sg_id          = module.security_groups.ecs_sg_id
+  alb_sg_id           = module.security_groups.alb_sg_id
+  capacity_provider   = module.ecs_cluster.capacity_provider_name
+  nginx_image         = var.nginx_image
+  apps_alb_dns        = module.vulnerable_apps.apps_alb_dns
+  noname_source_key   = var.noname_nginx_source_key
+  noname_source_index = var.noname_nginx_source_index
+  tags                = local.common_tags
 }
 
 resource "aws_secretsmanager_secret" "flex_registration_yaml" {

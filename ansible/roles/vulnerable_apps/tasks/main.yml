@@ -56,7 +56,7 @@
     - vampi
     - dvga
     - pixi
-  notify: restart apps
+  notify: Restart apps
 
 - name: Pull and start all apps
   ansible.builtin.command:

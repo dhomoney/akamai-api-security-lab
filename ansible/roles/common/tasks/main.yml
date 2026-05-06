@@ -2,7 +2,7 @@
 - name: Update all packages
   ansible.builtin.dnf:
     name: "*"
-    state: latest
+    state: latest # noqa: package-latest — lab nodes intentionally track the latest patch level on every provision run
     update_cache: true
 
 - name: Install common utilities

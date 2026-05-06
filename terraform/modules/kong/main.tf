@@ -116,11 +116,11 @@ resource "aws_ecs_task_definition" "kong" {
 
       environment = concat(
         [
-          { name = "KONG_DATABASE",                  value = "off" },
+          { name = "KONG_DATABASE", value = "off" },
           { name = "KONG_DECLARATIVE_CONFIG_STRING", value = "_format_version: \"3.0\"\n" },
-          { name = "KONG_PROXY_LISTEN",              value = "0.0.0.0:8000, 0.0.0.0:8443 ssl" },
-          { name = "KONG_ADMIN_LISTEN",              value = "0.0.0.0:8001" },
-          { name = "KONG_LOG_LEVEL",                 value = "info" }
+          { name = "KONG_PROXY_LISTEN", value = "0.0.0.0:8000, 0.0.0.0:8443 ssl" },
+          { name = "KONG_ADMIN_LISTEN", value = "0.0.0.0:8001" },
+          { name = "KONG_LOG_LEVEL", value = "info" }
         ],
         var.noname_plugin_enabled ? [{ name = "KONG_PLUGINS", value = "bundled,nonamesecurity" }] : []
       )
@@ -134,8 +134,8 @@ resource "aws_ecs_task_definition" "kong" {
         }
       }
 
-      memory    = 512
-      cpu       = 256
+      memory = 512
+      cpu    = 256
     }
   ])
 

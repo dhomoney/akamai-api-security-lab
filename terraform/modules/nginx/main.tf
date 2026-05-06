@@ -83,7 +83,7 @@ resource "aws_ecs_task_definition" "nginx" {
       environment = concat(
         [{ name = "APPS_ALB_DNS", value = var.apps_alb_dns }],
         var.noname_source_key != "" ? [
-          { name = "NN_SOURCE_KEY",   value = var.noname_source_key },
+          { name = "NN_SOURCE_KEY", value = var.noname_source_key },
           { name = "NN_SOURCE_INDEX", value = tostring(var.noname_source_index) }
         ] : []
       )
