@@ -37,8 +37,15 @@ module "bastion" {
 }
 
 resource "aws_key_pair" "lab" {
-  key_name   = "${var.project_name}-key"
-  public_key = file("${path.root}/../keys/lab_key.pub")
+  key_name = "${var.project_name}-key"
+
+  # `terraform validate` in CI runs without keys/lab_key.pub on disk (the
+  # keypair is generated locally by `make keys` before `make apply` and is
+  # gitignored). A bare `file(...)` call would fail validate because the
+  # file argument is a real file-read at parse time. fileexists() lets us
+  # fall back to a stub when the key is absent — the stub is never used in
+  # a real plan/apply because that codepath always runs after `make keys`.
+  public_key = fileexists("${path.root}/../keys/lab_key.pub") ? file("${path.root}/../keys/lab_key.pub") : "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ci-validate-stub"
 
   tags = local.common_tags
 }
