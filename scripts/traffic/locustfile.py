@@ -37,7 +37,31 @@ MULE_BASE = f"http://{MULE_ALB_DNS}" if MULE_ALB_DNS else None
 # Bump USER_POOL_SEED_PER_INSTANCE for faster initial fill.
 
 USER_POOL_SIZE = int(os.environ.get("USER_POOL_SIZE", "2000"))
-USER_POOL_SEED_PER_INSTANCE = int(os.environ.get("USER_POOL_SEED_PER_INSTANCE", "50"))
+
+# Per-instance seed cap. Each User class loops up to this many registrations
+# at on_start (and bails early once the shared pool is full). Different
+# classes need different defaults because they spawn at different rates and
+# rotate at different rates:
+#
+#   - VAmPIUser  weight=2 → ~11 instances at default TRAFFIC_USERS=50.
+#                VAmPI register is fast (~100ms), so 200 per instance hits
+#                USER_POOL_SIZE in ~2 min of warmup.
+#   - CrAPIUser  weight=1 → ~6 instances; signup is slow (~700ms) and the
+#                pool needs more per-instance share to reach 2000.
+#   - JuiceShop  weight=2 → ~11 instances, but more than half the tasks
+#                are unauthenticated reads that don't rotate, so the pool
+#                grows slowly via rotation. Seed harder upfront.
+#
+# Override any of these via env. The global USER_POOL_SEED_PER_INSTANCE is
+# the fallback for classes that don't set their own.
+_GLOBAL_SEED = int(os.environ.get("USER_POOL_SEED_PER_INSTANCE", "200"))
+USER_POOL_SEED_PER_INSTANCE_VAMPI = int(
+    os.environ.get("USER_POOL_SEED_PER_INSTANCE_VAMPI", str(_GLOBAL_SEED)))
+USER_POOL_SEED_PER_INSTANCE_CRAPI = int(
+    os.environ.get("USER_POOL_SEED_PER_INSTANCE_CRAPI", "400"))
+USER_POOL_SEED_PER_INSTANCE_JUICESHOP = int(
+    os.environ.get("USER_POOL_SEED_PER_INSTANCE_JUICESHOP", "200"))
+
 IDENTITY_ROTATION_INTERVAL = int(os.environ.get("IDENTITY_ROTATION_INTERVAL", "5"))
 
 
@@ -130,7 +154,7 @@ class VAmPIUser(FastHttpUser):
         # Seed phase: contribute up to N identities to the shared pool.
         # Stops early if the pool is already at target size (other instances
         # have done the work).
-        for _ in range(USER_POOL_SEED_PER_INSTANCE):
+        for _ in range(USER_POOL_SEED_PER_INSTANCE_VAMPI):
             if len(VAmPIUser._identity_pool) >= USER_POOL_SIZE:
                 break
             ident = self._register_identity()
@@ -286,7 +310,7 @@ class CrAPIUser(FastHttpUser):
     _identity_pool = []
 
     def on_start(self):
-        for _ in range(USER_POOL_SEED_PER_INSTANCE):
+        for _ in range(USER_POOL_SEED_PER_INSTANCE_CRAPI):
             if len(CrAPIUser._identity_pool) >= USER_POOL_SIZE:
                 break
             ident = self._register_identity()
@@ -408,7 +432,7 @@ class JuiceShopUser(FastHttpUser):
     _identity_pool = []
 
     def on_start(self):
-        for _ in range(USER_POOL_SEED_PER_INSTANCE):
+        for _ in range(USER_POOL_SEED_PER_INSTANCE_JUICESHOP):
             if len(JuiceShopUser._identity_pool) >= USER_POOL_SIZE:
                 break
             ident = self._register_identity()
