@@ -1,8 +1,8 @@
 # Akamai API Security Lab Environment
 
-Repeatable lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform and configures it via Ansible. Kong OSS and NGINX OSS (OpenResty) gateways run with Noname sensor plugins baked into custom ECR images. MuleSoft is provisioned in Terraform but disabled in Ansible until a Docker image is available.
+Repeatable lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform and configures it via Ansible. Kong OSS and NGINX OSS (OpenResty) run with Noname sensor plugins baked into custom ECR images. Anypoint Flex Gateway runs in connected mode, fronting a Juice Shop proxy API. A Noname Sensor DaemonSet runs on every cluster EC2 node and sniffs plaintext HTTP off the host NIC — that is the path the lab uses for Flex Gateway visibility, since the Mulesoft custom-policy is a Mule 4 Runtime policy and Anypoint refuses to apply it to Flex-served APIs. All three traffic sources (`lab-kong`, `lab-nginx`, `lab-aws-ecs`) register with the engine end-to-end.
 
-**Target environment**: AWS us-east-2, single VPC, ECS with EC2 launch type (t3.small), local Terraform state.
+**Target environment**: AWS us-east-2, single VPC, ECS with EC2 launch type (t3.medium — t3.small does not fit the sensor alongside the gateway tasks), local Terraform state.
 
 ## Common Commands
 
@@ -17,7 +17,7 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 make vault-create        # creates and encrypts ansible/vault.yml from example
 
 # Full deployment
-make deploy              # terraform init → apply → ansible provision
+make deploy              # terraform init -> apply -> ansible provision
 
 # Individual steps
 make init                # terraform init
@@ -26,7 +26,7 @@ make apply               # terraform apply
 make provision           # ansible-playbook site.yml
 
 # Teardown
-make destroy             # terraform destroy (prompts if -auto-approve removed)
+make destroy             # terraform destroy
 
 # Linting
 make lint                # runs both terraform and ansible linters
@@ -38,15 +38,13 @@ make vault-edit          # edit encrypted vault.yml
 
 # Traffic generation (feeds Noname engine for behavioral learning)
 make traffic-install     # install Locust into .venv (once after setup)
-make traffic             # headless traffic — all 4 APIs, Ctrl+C to stop
+make traffic             # headless traffic across all 5 user classes, Ctrl+C to stop
 make traffic-ui          # Locust web UI at http://localhost:8089
 TRAFFIC_USERS=25 TRAFFIC_RATE=5 make traffic  # tune rate
 
 # Noname sensor plugin installation (run once per lab, requires Docker + integration-files/*.zip)
-make deploy-plugins      # full flow: ECR → build images → apply → provision → plugin config
-# Or step by step:
+make deploy-plugins      # full flow: ECR -> build images -> apply -> provision -> plugin config
 make plugin-images       # create ECR repos, build+push images, write terraform/plugin.auto.tfvars
-make apply               # re-apply Terraform so ECS tasks pick up the new images
 make provision-plugins   # push Noname plugin config to Kong; verify NGINX health
 ```
 
@@ -60,94 +58,116 @@ The Ansible vault password file is expected at `~/.vault_pass`. The `AWS_PROFILE
 terraform/
   main.tf                  # Root module — wires all child modules together
   variables.tf / outputs.tf
-  terraform.tfvars.example # Copy to terraform.tfvars and fill in admin_cidr
+  terraform.tfvars.example # Copy to terraform.tfvars and fill in admin_cidr + Noname source values
   plugin.auto.tfvars       # Written by 'make plugin-images' (gitignored) — ECR URIs + plugin flag
   modules/
     vpc/                   # VPC, public/private subnets, IGW, single NAT GW
     security_groups/       # ALB SG, ECS SG, Noname SG
-    ecs_cluster/           # ECS cluster, EC2 launch template, ASG, capacity provider
-    ecr/                   # ECR repos for kong and nginx plugin images
+    ecs_cluster/           # ECS cluster, EC2 launch template, ASG, capacity provider (t3.medium)
+    ecr/                   # ECR repos for kong, nginx, mulesoft plugin/wrapper images
     kong/                  # Kong OSS ECS task + ALB
-    nginx/                 # NGINX OSS ECS task + ALB
-    mulesoft/              # Mule Runtime ECS task + ALB (license TBD)
-    noname/                # Noname sensor ECS task + SSM SecureString params
+    nginx/                 # NGINX OSS (OpenResty) ECS task + ALB
+    mulesoft/              # Anypoint Flex Gateway ECS task + ALB; registration.yaml from Secrets Manager
+    noname/                # Noname Sensor DaemonSet (host network/PID, NET_ADMIN/NET_RAW caps)
 
 ansible/
   site.yml                 # Master playbook — runs all roles in order
   plugins.yml              # Standalone playbook — configures Noname plugin on Kong
-  ansible.cfg              # Uses aws_ec2 dynamic inventory, SSH via keys/lab_key
+  ansible.cfg              # aws_ec2 dynamic inventory, SSH via keys/lab_key
   vault.yml.example        # Template for secrets — copy to vault.yml, encrypt
   requirements.yml         # Galaxy: amazon.aws, community.general, community.docker
-  inventory/
-    aws_ec2.yml            # Dynamic inventory filtered by tag Project=akamai-lab
+  inventory/aws_ec2.yml    # Dynamic inventory filtered by tag Project=akamai-lab
   roles/
     common/                # OS updates, system limits for container workloads
     kong/                  # Kong Admin API: creates sample service + route
     nginx/                 # Verifies NGINX ALB is reachable from localhost
-    mulesoft/              # Registers runtime with Anypoint Platform (disabled)
-    noname_integration/    # Registers Kong/NGINX integrations via Noname API
+    mulesoft/              # Verifies Flex Gateway ALB; accepts 200/404/502/503 (502 = no listeners pre-API-Manager-deploy)
+    noname_integration/    # Registers lab-kong and lab-nginx via Noname API (lab-aws-ecs self-registers via the sensor)
+    vulnerable_apps/       # Deploys VAmPI, DVGA, pixi, crAPI, Juice Shop on the apps host
 
 docker/
-  kong/Dockerfile          # FROM kong:latest + luarocks install of Noname Kong plugin
-  nginx/Dockerfile         # FROM openresty/openresty:bullseye + Noname Lua scripts
+  kong/Dockerfile          # FROM kong:latest + luarocks install of Noname Kong plugin; patches prevention.lua
+  nginx/Dockerfile         # FROM openresty/openresty:bullseye + Noname Lua scripts; patches prevention.lua
   nginx/nginx.conf.template # nginx config with Noname Lua hooks; ${APPS_ALB_DNS} substituted at startup
-  nginx/entrypoint.sh      # Runs envsubst then starts OpenResty
+  nginx/entrypoint.sh      # Runs envsubst, patches NN_SOURCE_KEY/NN_SOURCE_INDEX, starts OpenResty
+  mulesoft/Dockerfile      # FROM mulesoft/flex-gateway:latest; USER root briefly to mkdir+chown conf.d for nonroot uid 65532
+  mulesoft/entrypoint.sh   # Writes FLEX_REGISTRATION_YAML env var to conf.d/registration.yaml, logs diagnostics, exec /init
 
 integration-files/         # Drop Noname-provided .zip files here (gitignored)
   noname-security-kong-policy.zip
   noname-security-nginx-policy.zip
-
-.github/workflows/
-  lint.yml                 # PR/push: terraform fmt+validate+tflint, ansible-lint
+  noname-security-mulesoft-policy.zip   # Not used — see Architecture notes
 
 scripts/
   kong-tunnel.sh           # SSH tunnel to Kong Admin API via bastion
-  traffic/
-    locustfile.py          # Locust traffic generator — 4 FastHttpUser classes
-    requirements.txt       # locust>=2.20.0
+  traffic/locustfile.py    # Locust traffic generator — 5 FastHttpUser classes (Kong->pixi, NGINX->VAmPI, NGINX->DVGA, Kong->crAPI, Mule->Juice Shop)
+  traffic/requirements.txt # locust>=2.20.0
 ```
 
 ## Architecture
 
 ### Network flow
-Internet → ALB (public subnets) → ECS EC2 nodes (private subnets) → containers
-
-Each gateway (Kong, NGINX, MuleSoft) gets its own ALB. The Noname sensor runs as an ECS task in private subnets with outbound-only access to the Noname SaaS tenant.
+Internet -> ALB (public subnets) -> ECS EC2 nodes (private subnets) -> containers. Each gateway (Kong, NGINX, Flex Gateway) gets its own ALB. The Noname Sensor runs as a DaemonSet on every cluster node with outbound-only access to the Noname engine.
 
 ### ECS approach
-EC2 launch type (not Fargate) so that Ansible can SSH into the underlying nodes for configuration. Nodes run Amazon Linux 2023 ECS-optimized AMI. The `ecs_cluster` module manages the ASG and ECS capacity provider; individual gateway modules deploy task definitions and services on top of that shared cluster.
+EC2 launch type (not Fargate) so that Ansible can SSH into the underlying nodes for configuration. Nodes run Amazon Linux 2023 ECS-optimized AMI on t3.medium. The `ecs_cluster` module manages the ASG + capacity provider; gateway modules deploy task definitions on top of it.
 
 ### Kong (dbless mode)
-Kong runs in declarative (`KONG_DATABASE=off`) mode. No Postgres. The Ansible `kong` role configures routes/services via the Admin API (port 8001) after deployment. The Admin API port is restricted to `admin_cidr` in the security group.
+Kong runs in declarative (`KONG_DATABASE=off`) mode. The Ansible `kong` role configures routes/services via the Admin API (port 8001) after deployment. The Admin API port is restricted to `admin_cidr` in the SG. The Kong proxy ALB target group health check uses `path = "/"` and `matcher = "200-499"` — `/status` only exists on the Admin API port, so using it cycles tasks endlessly.
 
-### Noname sensor integration
-The Noname sensor ECS task reads its tenant URL and API key from SSM SecureString parameters (populated by Terraform from `noname_sensor_image`, `noname_tenant_url`, `noname_api_key` variables). The `noname_integration` Ansible role authenticates via `POST /auth/token` (service account `client_id`/`client_secret` → `accessToken` JWT), fetches the engine ID from `GET /api/v3/engines` (response key: `entities[0].id`), then registers Kong (`POST /api/v3/sources/kong`) and NGINX (`POST /api/v3/sources/nginx`) as traffic source integrations. All API calls run from localhost.
+### Noname integrations and plugins
+Each gateway needs both an integration registered with the engine AND a way to forward traffic. The lab uses three sources:
 
-### Noname sensor plugins (Kong and NGINX)
-Registering integrations is not enough — each gateway needs a sensor plugin that forwards API traffic to the Noname engine. The plugin is installed by baking it into a custom Docker image, not at runtime:
+- **lab-kong** — Kong plugin baked into the Kong Docker image via `docker/kong/Dockerfile` (luarocks installs the rock from the zip). Task env adds `KONG_PLUGINS=bundled,nonamesecurity` when `noname_plugin_enabled=true`. `ansible/plugins.yml` fetches the correct `sourceKey`/`sourceIndex` from `GET /api/v3/sources` and pushes them via the Kong declarative `/config` endpoint (the zip ships hardcoded keys that don't match a freshly registered integration).
+- **lab-nginx** — OpenResty + Lua scripts. `docker/nginx/Dockerfile` builds on `openresty/openresty:bullseye` (LuaJIT + lua-nginx-module are baked in; standard `nginx:latest` lacks them). The source key/index are injected via env var on the ECS task; `entrypoint.sh` patches them into the Lua before launching OpenResty.
+- **lab-aws-ecs** — Host-level Noname Sensor DaemonSet, deployed by `terraform/modules/noname/`. Captures plaintext HTTP off each EC2 host's NIC (BPF: `tcp and not tcp port 443`). This is the only viable path for Flex Gateway visibility because the Mulesoft custom-policy zip is a Mule 4 Runtime policy and Anypoint will not apply it to Flex Gateway-served APIs ("Not covered: there is no policy implementation for the runtime version where this API is running"). Don't try the policy path again for Flex Gateway.
 
-- **Kong**: `docker/kong/Dockerfile` installs the LuaRocks rock from the zip into `kong:latest`. The task definition adds `KONG_PLUGINS=bundled,nonamesecurity` when `noname_plugin_enabled=true`. The `ansible/plugins.yml` playbook fetches the correct `sourceKey`/`sourceIndex` from `GET /api/v3/sources` and pushes them via the Kong declarative config `/config` endpoint.
-- **NGINX**: `docker/nginx/Dockerfile` builds on `openresty/openresty:bullseye` (which has LuaJIT + lua-nginx-module built in — standard `nginx:latest` does not). The Lua scripts are copied to `/usr/local/openresty/nginx/lua-scripts/`. The `nginx.conf.template` has the Noname hooks baked in; `entrypoint.sh` runs `envsubst` to substitute `${APPS_ALB_DNS}` at container startup.
-- **Chicken-and-egg**: ECR repos must exist before images can be pushed. `make plugin-images` handles this: creates ECR repos via `terraform apply -target module.ecr`, builds and pushes images, then writes `terraform/plugin.auto.tfvars` (gitignored) with the ECR URIs and `noname_plugin_enabled=true`. A subsequent `make apply` picks up the new image references.
-- **Source key mismatch**: The Kong zip ships with hardcoded `NN_SOURCE_KEY` values that differ from the registered integration's `sourceKey`. The `plugins.yml` playbook fetches the correct values dynamically from `GET /api/v3/sources`, making it generic for any team member's tenant.
+**prevention.lua type-guard patch**: BOTH Kong and NGINX Dockerfiles patch the Noname plugin's `prevention.lua` with a `if type(tbl) ~= "table" then return true end` guard before the `next(tbl)` call. The vendor plugin assumes `self._rules` is always a table, but when the engine returns a JSON-string error response, `cjson.decode` produces a Lua string and `next()` crashes, returning 500.
+
+**Chicken-and-egg with images**: ECR repos must exist before images can be pushed. `make plugin-images` runs `terraform apply -target module.ecr` first, builds and pushes images, then writes `terraform/plugin.auto.tfvars` (gitignored) with the ECR URIs + `noname_plugin_enabled=true`. A subsequent `make apply` picks up the new image references.
+
+### Noname Sensor (DaemonSet) module
+- Task definition: `network_mode = "host"`, `pid_mode = "host"`, `user: root`, capabilities `NET_ADMIN, NET_RAW, SYS_NICE` (eBPF mode also adds `SYS_ADMIN, SYS_PTRACE` and host bind mounts).
+- Service: `scheduling_strategy = "DAEMON"` + `launch_type = "EC2"`. One sensor per cluster instance.
+- Sized 256 cpu / 512 MiB so it fits alongside the gateway tasks on each node.
+- Image lives in a private Google Cloud Artifact Registry. JSON service-account key is stored in AWS Secrets Manager at `/${project_name}/noname/jfrog-credentials` (shape `{"username":"_json_key_base64","password":"<base64 GCP SA key>"}`) and referenced via the task definition's `repositoryCredentials` block.
+- Source values (`noname_sniff_source_key`, `noname_sniff_source_index`, `noname_sniff_source_type`, default 201 = AWS ECS sensor) come from the Noname tenant: Settings -> Integrations -> Traffic Sources -> Add Integration -> AWS ECS tile -> Create profile -> CloudShell deployment script. **Create the source in the tenant BEFORE `terraform apply`** and copy the values into `terraform.tfvars`.
+- Other tfvars: `noname_engine_url`, `noname_should_use_ebpf` (default false), `noname_jfrog_credentials_json` (sensitive), `noname_sensor_image`.
+
+### Anypoint Flex Gateway (MuleSoft) and Juice Shop
+Flex Gateway runs in connected mode. The `registration.yaml` (generated via `docker run --entrypoint flexctl mulesoft/flex-gateway registration create ...`) is stored in AWS Secrets Manager at `/${project_name}/mulesoft/registration-yaml` (12 KB, exceeds SSM Advanced tier 8KB limit). Terraform creates the secret with a placeholder and a `lifecycle { ignore_changes = [secret_string] }` block so subsequent applies do not overwrite the real value. The ECS task injects it as `FLEX_REGISTRATION_YAML`; `docker/mulesoft/entrypoint.sh` writes it to `conf.d/registration.yaml` then `exec /init`. The task execution role has `secretsmanager:GetSecretValue` on that specific ARN.
+
+**Wrapper image plumbing — preserve these or the gateway breaks:**
+- Base image runs as nonroot (uid 65532) and `/etc/mulesoft/flex-gateway/` is root-owned. The Dockerfile briefly `USER root` to `mkdir -p .../conf.d && chown -R 65532:0 .../conf.d`, then `USER 65532` before the entrypoint.
+- The runtime is `/init` (a script that exports `FLEX_CONFIG_DIR=/etc/mulesoft/flex-gateway/conf.d:/usr/local/share/mulesoft/flex-gateway/conf.d` and execs `flex-agent`). `flexctl run` is not a thing — `flexctl` is just a CLI tool.
+- Write target must be inside one of the `FLEX_CONFIG_DIR` paths or the agent's directory watcher won't pick it up. We use `conf.d/` (the writable entry).
+
+**ECS service tuning:**
+- `aws_ecs_service.mulesoft` sets `health_check_grace_period_seconds = 600`. In connected mode envoy has zero listeners until a proxy API is deployed from API Manager, so the gateway returns 502 on the ALB health check during startup. Without the 10-min grace window, ECS replaces the task before the agent registers with Anypoint.
+- `aws_lb_target_group.mulesoft` health check uses `path = "/"`, `matcher = "200-499"`, `unhealthy_threshold = 5`. AWS rejects matchers above 499.
+
+The Juice Shop proxy API in API Manager has Downstream Port 8081 (matches the ECS task's containerPort). Reached via `/shop/` on the Flex Gateway ALB.
 
 ### Secrets flow
-- Terraform: Noname credentials go into `terraform.tfvars` (gitignored) and land in SSM SecureString.
+- Terraform: Noname source key/index/engine URL go into `terraform.tfvars` (gitignored). Flex Gateway `registration.yaml` and JFrog/GCP SA key go into AWS Secrets Manager. SSM SecureString plumbing for tenant URL/API key is gone — the sensor reads everything from env vars baked at apply time.
 - Ansible: All credentials live in `ansible/vault.yml` (gitignored, AES256-encrypted). Decrypted at runtime using `~/.vault_pass`.
 
 ## Known TODOs / Incomplete Areas
 
-- **MuleSoft image**: No official public Docker image exists. Build a custom image with the Mule Runtime and push to ECR. Update `var.mule_image` in `terraform.tfvars`. The MuleSoft play in `site.yml` is commented out until this is resolved.
-- **Noname sensor image**: Obtain the connector image URI from your Akamai/Noname tenant deployment guide. Set `noname_sensor_image` in `terraform.tfvars`.
-- **MuleSoft Anypoint license**: Ansible `mulesoft` role's Anypoint registration step requires `vault_anypoint_client_id` and a valid license key in vault.
+- **lab-aws-ecs Ansible registration**: The sensor self-registers, but if you want symmetry with lab-kong/lab-nginx, add a `GET /api/v3/sources` precheck in `noname_integration` for the AWS ECS source.
 - **HTTPS / TLS**: ALB listeners are HTTP only. Add ACM certificate + HTTPS listeners for any scenario requiring TLS-in-transit testing.
 
-## Ansible Implementation Notes — Do Not Regress These
+## Implementation Notes — Do Not Regress These
 
-- **SSH**: `ansible.cfg` sets `ControlMaster=no` to avoid stale socket errors through the bastion. `pipelining=True` keeps performance acceptable. Do not re-enable ControlMaster.
-- **Serial**: The common play uses `serial: 1` to avoid overloading the bastion with parallel ProxyJump connections. Do not remove this.
-- **curl conflict**: The ECS AMI ships `curl-minimal` — do not add `curl` to any DNF package list (it will conflict). Use the `ansible.builtin.uri` module for all HTTP tasks.
-- **pixi app**: Uses `mccutchen/go-httpbin:latest`. The 42crunch pixi image is not publicly available — do not try to switch back.
-- **NGINX role**: Runs on `localhost` and checks the NGINX ALB DNS name. It does not SSH to ECS nodes. The `nginx_alb_dns` var comes from a Terraform output passed as an extra-var.
-- **Noname engine ID**: Fetched dynamically from `GET /api/v3/engines` at provision time. No vault variable is needed for this.
-- **Docker Compose files**: No `version:` key in any compose file — it is obsolete in modern Docker and generates warnings.
+- `ansible.cfg` disables ControlMaster (`ControlMaster=no`) to avoid stale SSH socket errors when going through the bastion. `pipelining = True` keeps performance acceptable.
+- The common play uses `serial: 1` to avoid overloading the bastion with parallel ProxyJump connections.
+- ECS AMI ships `curl-minimal` — do not install `curl` via DNF (conflict). Use the `uri` module for HTTP tasks.
+- `pixi` uses `mccutchen/go-httpbin:latest` (the canonical 42crunch pixi image is not publicly available). vapi was retired and replaced by Juice Shop reached via the Flex Gateway proxy at `/shop/`.
+- VAmPIUser in the locust file hits `/vampi/createdb` once per process (gated by class-level `_db_initialized` flag) — VAmPI ships with empty SQLite.
+- The Makefile **must NOT** pass `--host` on the locust CLI. It overrides per-User class hosts and routes everything to Kong (100% 404s).
+- The traffic generator defaults to `TRAFFIC_USERS=50`, `TRAFFIC_RATE=5`.
+- Engine ID is fetched dynamically from `GET /api/v3/engines` — no vault variable for it.
+- `nginx`/`mulesoft` roles run on `localhost` and check the ALB DNS; ALB names are passed as extra-vars from Terraform output.
+- No `version:` key in any Docker Compose files — obsolete in modern Docker.
+- `noname_integration` does a `GET /api/v3/sources` precheck and only POSTs `lab-kong`/`lab-nginx` if the alias is missing. The Noname API does not return 409 on conflict — it just creates duplicates.
+- After pulling new crAPI images that change env-var shape, wipe the postgres+mongo volumes once with `cd /opt/apps/crapi && sudo docker-compose down -v` on the apps host. Init env vars (`POSTGRES_PASSWORD`, `MONGO_INITDB_ROOT_*`) only apply to a fresh data dir.

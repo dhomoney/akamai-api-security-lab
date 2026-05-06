@@ -1,6 +1,6 @@
 # Akamai API Security Lab
 
-Repeatable AWS lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform, configures it via Ansible, and runs four vulnerable API applications behind two API gateways. The Noname sensor plugin on each gateway forwards API traffic to the Noname SaaS engine for behavioral analysis and detection.
+Repeatable AWS lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform, configures it via Ansible, and runs five vulnerable API applications behind three API gateways. All three Noname traffic sources — Kong plugin, NGINX plugin, and the AWS ECS host-level Sensor — register with the engine and report end-to-end.
 
 **Region**: us-east-2 (Ohio) | **Terraform state**: local
 
@@ -14,17 +14,18 @@ Internet → ALB (public subnets)
               ├── NGINX/OpenResty ALB       port 80
               └── Anypoint Flex Gateway ALB port 80
 
-           ECS EC2 cluster (private subnets)
-              ├── Kong OSS container             ← nonamesecurity plugin baked in
-              ├── NGINX/OpenResty container      ← Noname Lua plugin baked in
+           ECS EC2 cluster (private subnets, t3.medium)
+              ├── Kong OSS container              ← nonamesecurity plugin baked in   (lab-kong)
+              ├── NGINX/OpenResty container       ← Noname Lua plugin baked in       (lab-nginx)
               ├── Anypoint Flex Gateway container ← registration.yaml from Secrets Manager
-              └── Noname sensor container        (outbound-only to SaaS tenant)
+              └── Noname Sensor (DaemonSet)       ← one per host, host-network NIC sniff (lab-aws-ecs)
 
            Apps host EC2 (private subnet)
-              ├── crAPI   :8080   OWASP crAPI vulnerable app
-              ├── Pixi    :8888   go-httpbin (stateless REST)
-              ├── VAmPI   :5000   Flask/SQLite vulnerable REST API
-              └── DVGA    :5013   Django vulnerable GraphQL API
+              ├── crAPI       :8080   OWASP crAPI vulnerable app
+              ├── Pixi        :8888   go-httpbin (stateless REST)
+              ├── VAmPI       :5000   Flask/SQLite vulnerable REST API
+              ├── DVGA        :5013   Django vulnerable GraphQL API
+              └── Juice Shop  :3000   OWASP Juice Shop (behind Flex Gateway proxy)
 ```
 
 **Traffic routing:**
@@ -36,9 +37,9 @@ Internet → ALB (public subnets)
 | Kong | `/sample/` | httpbin.org |
 | NGINX | `/vampi/` | apps:5000 |
 | NGINX | `/dvga/` | apps:5013 |
-| Flex Gateway | (configured via Anypoint API Manager) | varies |
+| Flex Gateway | `/shop/` | apps:3000 (Juice Shop) |
 
-The Kong Admin API (port 8001) is restricted to `admin_cidr` in the security group.
+The Kong Admin API (port 8001) is restricted to `admin_cidr` in the security group. The Flex Gateway proxy API is configured in Anypoint API Manager; the Noname Sensor (DaemonSet) gives the engine visibility into Flex Gateway → Juice Shop traffic since the Mulesoft custom-policy path does not apply to Flex Gateway-served APIs (see "Known limitations").
 
 ---
 
@@ -68,18 +69,18 @@ Run this again any time you see `Token has expired` or `SSO` errors in command o
 
 ## Files you need from Noname/Akamai
 
-The Noname sensor plugin zip files are not included in this repo. Obtain them from your Akamai/Noname tenant and drop them in `integration-files/` before running `make plugin-images`.
+The Noname plugin zip files are not included in this repo. Obtain them from your Akamai/Noname tenant and drop them in `integration-files/` before running `make plugin-images`.
 
 | File | Where to get it |
 |---|---|
 | `integration-files/noname-security-kong-policy.zip` | Akamai/Noname tenant portal or support |
 | `integration-files/noname-security-nginx-policy.zip` | Akamai/Noname tenant portal or support |
-| `integration-files/noname-security-mulesoft-policy.zip` | Akamai/Noname tenant portal or support |
 
-You also need the following from your Noname tenant (used in the Ansible vault):
+You also need the following from your Noname tenant:
 
-- **Tenant URL** — e.g., `https://yourname-lab.nonamesec.com`
-- **Service account client ID and secret** — create a service account in the Noname UI under **Settings → Service Accounts**
+- **Tenant URL** — e.g., `https://yourname-lab.nonamesec.com` (used in the Ansible vault)
+- **Service account client ID and secret** — create one under **Settings → Service Accounts** (used in the Ansible vault)
+- **AWS ECS integration profile** — create one under **Settings → Integrations → Traffic Sources → Add Integration → AWS ECS → Create profile**. The wizard returns a CloudShell deployment script that contains all the values needed by the Sensor: `ENGINE_URL`, `SNIFF_SOURCE_KEY`, `SNIFF_SOURCE_INDEX`, the sensor image URI, and a JSON document with GCP Artifact Registry credentials. Copy these into `terraform/terraform.tfvars` (see Configuration below). The integration profile must exist **before** `terraform apply`, otherwise the Sensor task starts with empty source values and fails.
 
 ## Files you need from MuleSoft (Anypoint Flex Gateway)
 
@@ -154,6 +155,22 @@ vault_noname_client_secret: "<service account client secret>"
 
 All other fields (`vault_anypoint_*`, `vault_kong_admin_token`, etc.) can stay as `REPLACE` placeholders — they are only used for features not yet enabled.
 
+### terraform/terraform.tfvars — Sensor variables
+
+Copy these out of the Noname AWS ECS deployment script. `noname_jfrog_credentials_json` is a JSON document `{"username":"_json_key_base64","password":"<base64 GCP SA key>"}` — pass it via a sensitive heredoc, do not commit it.
+
+```hcl
+noname_engine_url             = "https://<tenant>.nonamesec.com/engine"
+noname_sniff_source_key       = "<from AWS ECS integration profile>"
+noname_sniff_source_index     = 1
+noname_sniff_source_type      = 201   # AWS ECS — leave at default
+noname_should_use_ebpf        = false # eBPF capture is opt-in
+noname_sensor_image           = "us-central1-docker.pkg.dev/noname-artifacts/nns-docker/noname-sensor:<version>"
+noname_jfrog_credentials_json = <<EOT
+{"username":"...","password":"..."}
+EOT
+```
+
 ---
 
 ## Full build-up (first time)
@@ -205,18 +222,18 @@ make deploy
 This runs `terraform init → apply → ansible-playbook site.yml` in sequence. Expect 10–15 minutes. It:
 
 - Creates the VPC, subnets, IGW, NAT GW, security groups
-- Launches the ECS cluster (2× t3.small EC2 nodes) and the apps EC2 host
-- Starts Kong, NGINX, Anypoint Flex Gateway, and the Noname sensor as ECS tasks using public/base images
-- Installs and starts crAPI, Pixi, VAmPI, and DVGA on the apps host
-- Registers Kong and NGINX as traffic source integrations in your Noname tenant
+- Launches the ECS cluster (3× t3.medium EC2 nodes — t3.small is too small once the Sensor lands on every host) and the apps EC2 host
+- Starts Kong, NGINX, and Anypoint Flex Gateway as ECS tasks using public/base images, plus the Noname Sensor as a per-host DaemonSet pulled from the private GCP Artifact Registry
+- Installs and starts crAPI, Pixi, VAmPI, DVGA, and Juice Shop on the apps host
+- Registers Kong and NGINX as traffic source integrations in your Noname tenant (the AWS ECS source — `lab-aws-ecs` — was created in the Noname UI before `terraform apply` and is already populated)
 
-At this point the gateways are running but using vanilla images (no Noname plugin). The integrations will show in the Noname UI but the gateways will appear offline because no plugin traffic is flowing yet.
+At this point the gateways are running but using vanilla images (no Noname plugin). The Kong and NGINX integrations will show in the Noname UI but appear offline because no plugin traffic is flowing yet. The Sensor (`lab-aws-ecs`) starts reporting as soon as host traffic crosses any cluster NIC.
 
 ---
 
 ### Phase 4 — Noname sensor plugins
 
-This phase bakes the Noname Lua plugins into custom Docker images, pushes them to ECR, and wires them into the ECS task definitions. The zip files in `integration-files/` must be present.
+This phase bakes the Noname Lua plugins into custom Docker images, pushes them to ECR, and wires them into the ECS task definitions. The Kong and NGINX zip files in `integration-files/` must be present (the Mulesoft policy zip is not used — see "Known limitations").
 
 ```bash
 # Step 1: Build and push plugin images to ECR
@@ -278,7 +295,7 @@ curl -s http://${KONG_ALB}:8001/routes | python3 -c \
 # sample-route
 ```
 
-In the Noname UI, Kong and NGINX should show as **Online** within 1–2 minutes of traffic hitting them.
+In the Noname UI, Kong, NGINX, and the AWS ECS Sensor (`lab-aws-ecs`) should all show as **Online** within 1–2 minutes of traffic hitting the gateways.
 
 ---
 
@@ -314,6 +331,7 @@ All traffic should go through the gateway URLs — not directly to the apps — 
 | Pixi (go-httpbin) | Kong | `/pixi/` | Stateless httpbin API. No auth required. Good for basic request/response exploration. |
 | VAmPI | NGINX | `/vampi/` | Flask REST API with SQLite. OWASP API Top 10 vulnerabilities. Must run `createdb` first. |
 | DVGA | NGINX | `/dvga/` | Django GraphQL API. Endpoint at `/dvga/graphql`. Vulnerable to introspection and injection. |
+| Juice Shop | Flex Gateway | `/shop/` | OWASP Juice Shop. Reached via the Anypoint Flex Gateway proxy API; Sensor (DaemonSet) provides the Noname coverage for this path. |
 
 ### VAmPI — initialize database
 
@@ -458,7 +476,7 @@ aws secretsmanager put-secret-value \
 
 | Feature | Status |
 |---|---|
-| Anypoint Flex Gateway | ECS task, ALB, and ECR image are fully provisioned. The MuleSoft policy zip (`integration-files/noname-security-mulesoft-policy.zip`) has been obtained. The wrapper image now exec's `/init` (the base image's actual runtime — `flexctl` is a CLI tool with no `run` subcommand) and writes registration.yaml into `conf.d/`. ECS service uses `health_check_grace_period_seconds = 600` to give the gateway 10 minutes to register with Anypoint before health checks (capped at matcher `200-499` by AWS) start replacing tasks; this matters because connected-mode envoy has no listeners until a proxy API is deployed from API Manager, and so returns 502 until then. **Open issue**: the agent currently rejects the file with `cannot unmarshal string into Go value of type engine.resource`, which keeps the gateway in **Not running** in Anypoint. The diagnostic entrypoint (env-var byte count, file size/lines, first 3 lines logged to stderr) is in place to pinpoint root cause. Pending: resolve the registration parsing error, add an automatic `POST /api/v3/sources/mulesoft` task to `ansible/roles/noname_integration/tasks/main.yml`, and create proxy APIs in Anypoint API Manager. |
-| Noname sensor container | Requires an image URI from your Akamai deployment guide. Not needed for gateway plugin mode — the plugins send traffic directly. |
+| Mulesoft custom policy on Flex Gateway | Not viable. `noname-security-mulesoft-policy.zip` is packaged as a Mule 4 `mule-policy` and only applies to APIs running on the Mule 4 Runtime. APIs served by Flex Gateway (which is what this lab runs) show "Not covered: there is no policy implementation for the runtime version where this API is running" in API Manager, and `install_mule.pyz` is a dead end against them. Per Noname documentation, Flex Gateway is supported by the **Noname Sensor** instead — that is the path the lab takes, and `lab-aws-ecs` covers Flex Gateway → Juice Shop traffic. |
 | HTTPS / TLS | ALB listeners are HTTP only. Add ACM certificates and HTTPS listeners for TLS-in-transit testing scenarios. |
 | Remote Terraform state | State is stored locally. For shared team use, configure an S3 + DynamoDB backend in `terraform/main.tf`. |
+| Cluster headroom | Three `t3.medium` hosts each running a Sensor task plus 1–2 gateway/app tasks is reasonably packed. Bumping any task's memory (Kong, NGINX, Mulesoft, vulnerable apps) will require either a bigger instance type or a placement-strategy change. |
