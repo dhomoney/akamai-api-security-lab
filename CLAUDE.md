@@ -225,7 +225,15 @@ The attack file covers 9 of the 10 OWASP API 2023 categories — API1 BOLA, API2
 - `JuiceShopAttacker` is `abstract = True`; a concrete `_JuiceShopAttacker` is registered only when `MULE_ALB_DNS` is set — same pattern as `JuiceShopUser` in `locustfile.py`. Do not lose this guard or the attack file fails on labs without Flex Gateway.
 
 ### CI lint
-`make lint` (and the `lint.yml` workflow) passes at the ansible-lint **production** profile with zero failures and zero warnings; `terraform fmt -check -recursive` is also clean. A small `.ansible-lint` at the repo root skips two opinionated rules (`var-naming[no-role-prefix]` for `extra-vars` shared across roles, and `yaml[colons]` for vertically aligned `defaults/main.yml`).
+`make lint` (and the `lint.yml` workflow) passes at the ansible-lint **production** profile with zero failures and zero warnings; `terraform fmt -check -recursive`, `terraform validate`, and `tflint --chdir=terraform --recursive` are all clean. A small `.ansible-lint` at the repo root skips two opinionated rules (`var-naming[no-role-prefix]` for `extra-vars` shared across roles, and `yaml[colons]` for vertically aligned `defaults/main.yml`). Each child terraform module has its own `versions.tf` declaring `required_version >= 1.5` and `aws ~> 5.0` — tflint enforces this even though the root already does.
+
+**SSH key validate fallback.** `aws_key_pair.lab.public_key` reads `keys/lab_key.pub` via `file()`. Terraform validate evaluates `file()` at parse time, but the CI runner has no `keys/` directory (gitignored — the keypair is generated locally by `make keys` before `make apply`). The resource therefore wraps the read in `fileexists()`:
+
+```hcl
+public_key = fileexists("${path.root}/../keys/lab_key.pub") ? file("${path.root}/../keys/lab_key.pub") : "ssh-ed25519 AAAA…AAAA ci-validate-stub"
+```
+
+The stub never reaches AWS in normal use — it only fires when the key is absent, which only happens in CI (where validate runs but apply does not). Apply any new resource that reads a local file the same way: wrap in `fileexists()` so CI doesn't have to materialise the file.
 
 ## Known TODOs / Incomplete Areas
 
