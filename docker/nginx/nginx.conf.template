@@ -18,7 +18,18 @@ http {
     keepalive_timeout 65;
 
     lua_package_path '/usr/local/openresty/nginx/lua-scripts/?.lua;;';
-    resolver ${DNS_RESOLVER};
+
+    # AWS ALBs rotate node IPs over time. NGINX's `upstream` directive and a
+    # bare `proxy_pass http://hostname` only resolve DNS ONCE at config load
+    # and cache the IP forever — once AWS rotates the ALB node, NGINX keeps
+    # hitting the dead IP and every request returns 502 ("connect() failed
+    # (113: No route to host) while connecting to upstream").
+    #
+    # Fix: configure a runtime resolver and use a variable in proxy_pass so
+    # the hostname is re-resolved at request time. valid=10s caches each
+    # answer briefly so we don't DNS-lookup on every request.
+    resolver ${DNS_RESOLVER} valid=10s ipv6=off;
+    resolver_timeout 5s;
 
     log_by_lua_block {
         local logger = require "noname_logger"
@@ -30,19 +41,14 @@ http {
         init_worker.init_worker()
     }
 
-    upstream vampi_backend {
-        server ${APPS_ALB_DNS}:5000;
-        keepalive 16;
-    }
-
-    upstream dvga_backend {
-        server ${APPS_ALB_DNS}:5013;
-        keepalive 16;
-    }
-
     server {
         listen 80;
         server_name _;
+
+        # Apps ALB DNS — substituted at container startup by entrypoint.sh.
+        # Held in a variable so proxy_pass below uses the resolver at request
+        # time instead of caching the IP at config load.
+        set $apps_alb "${APPS_ALB_DNS}";
 
         # Noname code starts
         set $noname_req_body "";
@@ -62,15 +68,23 @@ http {
             deny all;
         }
 
+        # NGINX gotcha: with a static upstream + `proxy_pass http://up/` the
+        # location prefix gets auto-stripped from the URI. With a variable
+        # in proxy_pass that auto-strip is gone — the upstream sees the full
+        # /vampi/... URI and returns 405. Use `rewrite ... break` to strip
+        # the prefix manually before proxying, and drop the trailing slash
+        # on proxy_pass so the rewritten URI is what gets sent.
         location /vampi/ {
-            proxy_pass         http://vampi_backend/;
+            rewrite ^/vampi/(.*)$ /$1 break;
+            proxy_pass         http://$apps_alb:5000;
             proxy_set_header   Host $host;
             proxy_set_header   X-Real-IP $remote_addr;
             proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
         }
 
         location /dvga/ {
-            proxy_pass         http://dvga_backend/;
+            rewrite ^/dvga/(.*)$ /$1 break;
+            proxy_pass         http://$apps_alb:5013;
             proxy_set_header   Host $host;
             proxy_set_header   X-Real-IP $remote_addr;
             proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
