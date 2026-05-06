@@ -41,6 +41,9 @@ make traffic-install     # install Locust into .venv (once after setup)
 make traffic             # headless traffic across all 5 user classes, Ctrl+C to stop
 make traffic-ui          # Locust web UI at http://localhost:8089
 TRAFFIC_USERS=25 TRAFFIC_RATE=5 make traffic  # tune rate
+make traffic-owasp       # OWASP API Top 10 attacks across all 5 apps; run AFTER ~30 min of 'make traffic' so attacks land as anomalies vs the baseline (do not run concurrently — baseline gets poisoned)
+make traffic-owasp-ui    # Locust web UI for the attack file
+ATTACK_USERS=10 ATTACK_RATE=2 make traffic-owasp  # tune attack cadence (intentionally lower than baseline — demo, not flood)
 
 # Noname sensor plugin installation (run once per lab, requires Docker + integration-files/*.zip)
 make deploy-plugins      # full flow: ECR -> build images -> apply -> provision -> plugin config
@@ -101,6 +104,7 @@ integration-files/         # Drop Noname-provided .zip files here (gitignored)
 scripts/
   kong-tunnel.sh           # SSH tunnel to Kong Admin API via bastion
   traffic/locustfile.py    # Locust traffic generator — 5 FastHttpUser classes (Kong->pixi, NGINX->VAmPI, NGINX->DVGA, Kong->crAPI, Mule->Juice Shop)
+  traffic/attackfile.py    # OWASP API Top 10 (2023) attack generator — 5 attacker classes, one per app; covers API1-5, API7-9 (skips API6 Sensitive Business Flows, API10 Unsafe Consumption)
   traffic/requirements.txt # locust>=2.20.0
 ```
 
@@ -164,8 +168,11 @@ The Juice Shop proxy API in API Manager has Downstream Port 8081 (matches the EC
 - ECS AMI ships `curl-minimal` — do not install `curl` via DNF (conflict). Use the `uri` module for HTTP tasks.
 - `pixi` uses `mccutchen/go-httpbin:latest` (the canonical 42crunch pixi image is not publicly available). vapi was retired and replaced by Juice Shop reached via the Flex Gateway proxy at `/shop/`.
 - VAmPIUser in the locust file hits `/vampi/createdb` once per process (gated by class-level `_db_initialized` flag) — VAmPI ships with empty SQLite.
-- The Makefile **must NOT** pass `--host` on the locust CLI. It overrides per-User class hosts and routes everything to Kong (100% 404s).
-- The traffic generator defaults to `TRAFFIC_USERS=50`, `TRAFFIC_RATE=5`.
+- The Makefile **must NOT** pass `--host` on the locust CLI (applies to BOTH `make traffic` and `make traffic-owasp`). It overrides per-User class hosts and routes everything to Kong (100% 404s).
+- The traffic generator defaults to `TRAFFIC_USERS=50`, `TRAFFIC_RATE=5`. The attack generator defaults to `ATTACK_USERS=10`, `ATTACK_RATE=2` — keep attack cadence below baseline cadence or detection events drown in scan noise.
+- Every `attackfile.py` task wraps `catch_response` and accepts `200-503` as success — attacks produce 4xx/5xx by design, locust must not count those as failures or the run aborts.
+- `JuiceShopAttacker` is `abstract = True`; the concrete `_JuiceShopAttacker` only registers when `MULE_ALB_DNS` is set in env, so attack runs do not fail when Flex Gateway is absent.
+- `.ansible-lint` skips `var-naming[no-role-prefix]` (cross-role shared vars) and `yaml[colons]` (visual alignment). `make lint` passes at the production profile.
 - Engine ID is fetched dynamically from `GET /api/v3/engines` — no vault variable for it.
 - `nginx`/`mulesoft` roles run on `localhost` and check the ALB DNS; ALB names are passed as extra-vars from Terraform output.
 - No `version:` key in any Docker Compose files — obsolete in modern Docker.

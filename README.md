@@ -301,23 +301,36 @@ In the Noname UI, Kong, NGINX, and the AWS ECS Sensor (`lab-aws-ecs`) should all
 
 ### Phase 6 — Traffic generation
 
-The Locust traffic generator continuously exercises all four APIs, giving the Noname engine enough traffic to build behavioral baselines.
+Two separate Locust files drive traffic at the lab — run them as distinct phases of a demo, not at the same time. Mixing them poisons the behavioural baseline.
+
+**Step 1 — baseline (`make traffic`).** Exercises all five vulnerable apps with realistic happy-path requests so the Noname engine can learn normal patterns per source. Let it run for at least 30 minutes on the first build before moving on.
 
 ```bash
 # Install Locust into .venv (once, after make setup)
 make traffic-install
 
-# Run headless traffic generator — Ctrl+C to stop
+# Run headless baseline traffic — Ctrl+C to stop
 make traffic
 
-# Or launch the Locust web UI at http://localhost:8089 to control rate interactively
+# Or launch the Locust web UI at http://localhost:8089 for interactive control
 make traffic-ui
 
 # Increase concurrency
 TRAFFIC_USERS=25 TRAFFIC_RATE=5 make traffic
 ```
 
-Allow 30+ minutes of traffic for Noname to populate risk scores and API baselines.
+**Step 2 — OWASP API Top 10 attacks (`make traffic-owasp`).** Once the baseline is trained, fire attacks across the same gateways to populate Noname's Runtime tab with real detection events — BOLA, broken auth, mass assignment, BFLA, SSRF, GraphQL abuse, oversized payloads, and inventory probing. Covers 9 of the 10 OWASP API 2023 categories (API1, API2, API3, API4, API5, API7, API8, API9; API6 and API10 are not in scope). Each attacker class targets a specific app: crAPI via Kong, VAmPI and DVGA via NGINX, Juice Shop via Flex Gateway (only when `MULE_ALB_DNS` is set), Pixi via Kong.
+
+```bash
+# Headless attack run — Ctrl+C to stop
+make traffic-owasp
+
+# Web UI variant at http://localhost:8089
+make traffic-owasp-ui
+
+# Tune rate (defaults are intentionally lower than baseline — demo cadence)
+ATTACK_USERS=20 ATTACK_RATE=4 make traffic-owasp
+```
 
 ---
 

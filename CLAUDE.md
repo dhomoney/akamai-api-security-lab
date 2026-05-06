@@ -42,9 +42,14 @@ make vault-edit          # edit encrypted vault.yml
 
 # Traffic generation (feeds Noname engine for behavioral learning)
 make traffic-install     # install Locust into .venv (once after setup)
-make traffic             # headless traffic — all 4 APIs, Ctrl+C to stop
+make traffic             # headless baseline traffic — all 5 apps, Ctrl+C to stop
 make traffic-ui          # Locust web UI at http://localhost:8089
 TRAFFIC_USERS=25 TRAFFIC_RATE=5 make traffic  # tune rate
+
+# OWASP API Top 10 attack generator (populates the Noname Runtime tab)
+make traffic-owasp       # headless attack run across all 5 apps
+make traffic-owasp-ui    # Locust web UI for the attack file
+ATTACK_USERS=20 ATTACK_RATE=4 make traffic-owasp  # tune rate (defaults 10/2)
 
 # Noname sensor plugin installation (run once per lab, requires Docker + integration-files/*.zip)
 make deploy-plugins      # full flow: ECR → build images → apply → provision → plugin config
@@ -108,7 +113,8 @@ integration-files/         # Drop Noname-provided .zip files here (gitignored)
 scripts/
   kong-tunnel.sh           # SSH tunnel to Kong Admin API via bastion
   traffic/
-    locustfile.py          # Locust traffic generator — 4 FastHttpUser classes
+    locustfile.py          # Locust baseline traffic generator — one FastHttpUser class per app
+    attackfile.py          # Locust OWASP API Top 10 (2023) attack generator — runs in parallel as a separate locustfile
     requirements.txt       # locust>=2.20.0
 ```
 
@@ -177,6 +183,22 @@ aws secretsmanager put-secret-value \
 ### Secrets flow
 - Terraform: sensitive values come from `terraform.tfvars` (gitignored). Flex Gateway `registration.yaml` lands in AWS Secrets Manager at `/${project_name}/mulesoft/registration-yaml` (too large for SSM — exceeds 8KB Advanced tier limit). The Noname Sensor's GCP Artifact Registry SA key (JSON) lands in Secrets Manager at `/${project_name}/noname/jfrog-credentials` and is consumed via `repositoryCredentials`. The sensor's `SNIFF_SOURCE_KEY` is passed straight into the task as a (sensitive) env var — no SSM/Secrets Manager indirection.
 - Ansible: All credentials live in `ansible/vault.yml` (gitignored, AES256-encrypted). Decrypted at runtime using `~/.vault_pass`.
+
+### Traffic generation — two-phase workflow
+Baseline and attack traffic are deliberately separate locustfiles. Run them as distinct phases of a demo, not concurrently — mixing them poisons the behavioural baseline.
+
+1. **Baseline (`scripts/traffic/locustfile.py`)** — `make traffic` exercises the five vulnerable apps with realistic happy-path requests so the Noname engine can learn normal patterns per source. Let it run ~30 minutes for the first build before declaring the baseline trained.
+2. **Attacks (`scripts/traffic/attackfile.py`)** — `make traffic-owasp` then fires OWASP API Top 10 (2023) attacks against the same gateways. Noname flags these as anomalies against the trained baseline and surfaces them in the Runtime tab as detection events.
+
+The attack file covers 9 of the 10 OWASP API 2023 categories — API1 BOLA, API2 Broken Auth, API3 BOPLA / mass assignment, API4 Unrestricted Resource Consumption, API5 BFLA, API7 SSRF, API8 Security Misconfiguration, API9 Improper Inventory Management. API6 (Sensitive Business Flows) and API10 (Unsafe Consumption of APIs) are intentionally not exercised. Each app gets its own attacker class shaped to its vulnerabilities: `CrAPIAttacker` (Kong `/crapi/`), `VAmPIAttacker` (NGINX `/vampi/`), `DVGAAttacker` (NGINX `/dvga/` GraphQL — introspection, nested-resolver DoS, batch login stuffing), `JuiceShopAttacker` (Flex Gateway `/shop/`), `PixiAttacker` (Kong `/pixi/`).
+
+**Implementation invariants — preserve these or the attack run breaks:**
+- All `@task` methods use `catch_response` and accept `200 ≤ status ≤ 503` as success. Attacks deliberately produce 4xx/5xx and we do not want Locust marking those as failures and polluting demo stats.
+- Same `--host` gotcha as `locustfile.py`: the Makefile target omits `--host` so each User class's host attribute (Kong / NGINX / Mulesoft) is honoured. A CLI `--host` overrides them and routes everything to the wrong gateway.
+- `JuiceShopAttacker` is `abstract = True`; a concrete `_JuiceShopAttacker` is registered only when `MULE_ALB_DNS` is set — same pattern as `JuiceShopUser` in `locustfile.py`. Do not lose this guard or the attack file fails on labs without Flex Gateway.
+
+### CI lint
+`make lint` (and the `lint.yml` workflow) passes at the ansible-lint **production** profile with zero failures and zero warnings; `terraform fmt -check -recursive` is also clean. A small `.ansible-lint` at the repo root skips two opinionated rules (`var-naming[no-role-prefix]` for `extra-vars` shared across roles, and `yaml[colons]` for vertically aligned `defaults/main.yml`).
 
 ## Known TODOs / Incomplete Areas
 
