@@ -150,7 +150,7 @@ Flex Gateway runs in connected mode. The `registration.yaml` (generated via `doc
 - `aws_ecs_service.mulesoft` sets `health_check_grace_period_seconds = 600`. In connected mode envoy has zero listeners until a proxy API is deployed from API Manager, so the gateway returns 502 on the ALB health check during startup. Without the 10-min grace window, ECS replaces the task before the agent registers with Anypoint.
 - `aws_lb_target_group.mulesoft` health check uses `path = "/"`, `matcher = "200-499"`, `unhealthy_threshold = 5`. AWS rejects matchers above 499.
 
-The Juice Shop proxy API in API Manager has Downstream Port 8081 (matches the ECS task's containerPort). Reached via `/shop/` on the Flex Gateway ALB.
+**Anypoint API Manager — manual one-time step (the lab does not automate it):** after Flex Gateway registers, deploy a proxy API to it from API Manager. **Implementation URI** = `<apps_alb_dns>:3000`, **Downstream Port** = `8081` (must match the ECS task's containerPort — mismatch produces 502s with no other obvious clue), **Path** = `/shop/`. Until the proxy API deploys, envoy has zero listeners, every `/shop/` request returns 502, and the `lab-aws-ecs` Sensor has no Flex Gateway traffic to capture.
 
 ### Secrets flow
 - Terraform: Noname source key/index/engine URL go into `terraform.tfvars` (gitignored). Flex Gateway `registration.yaml` and JFrog/GCP SA key go into AWS Secrets Manager. SSM SecureString plumbing for tenant URL/API key is gone — the sensor reads everything from env vars baked at apply time.
