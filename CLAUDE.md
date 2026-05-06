@@ -8,6 +8,26 @@ Repeatable lab environment for testing and learning Akamai API Security (formerl
 
 **Target environment**: AWS us-east-2, single VPC, ECS with EC2 launch type (t3.medium — t3.small is too small once the sensor lands on every host), local Terraform state.
 
+## Tooling — RTK (Rust Token Killer)
+
+`rtk` is a token-optimised CLI proxy installed at `~/.local/bin/rtk` (verify with `rtk --version`). **Always prefix shell commands you run in this lab with `rtk`** — it has dedicated filters for the common ones and falls through transparently for anything else, so it is always safe to use. Token reduction is typically 60–90% on dev operations.
+
+Use it for:
+
+- **Git** — `rtk git status`, `rtk git log`, `rtk git diff`, `rtk git show`, `rtk git add`, `rtk git commit`, `rtk git push`. Works for every git subcommand including ones not explicitly listed.
+- **AWS CLI** — `rtk aws ecs describe-services …`, `rtk aws elbv2 describe-target-health …`, `rtk aws logs tail …`. Compresses JSON / strips noise.
+- **Docker / Kubernetes** — `rtk docker ps`, `rtk docker logs`, `rtk kubectl get`, `rtk kubectl logs`.
+- **Network** — `rtk curl <url>` (auto-JSON detection), `rtk wget <url>`.
+- **Search / files** — `rtk grep <pattern>`, `rtk find <pattern>`, `rtk read <file>`, `rtk ls <path>`.
+- **GitHub** — `rtk gh pr view`, `rtk gh run list`, `rtk gh issue list`, `rtk gh api`.
+- **Logs / errors / diffs** — `rtk log <file>` (deduplicated), `rtk err <cmd>` (errors-only), `rtk diff` (ultra-condensed).
+
+Chained commands need the prefix on each one: `rtk git add . && rtk git commit -m "msg" && rtk git push`.
+
+When you genuinely need raw, unfiltered output (e.g., piping AWS JSON into `python3 -c "json.load(sys.stdin)…"`, or capturing exact byte-for-byte output for diff'ing), use `rtk proxy <command>` to bypass filtering. Filtered output is not always valid JSON.
+
+Meta: `rtk gain` shows token savings, `rtk discover` analyses Claude Code history for missed opportunities, `rtk init --global` regenerates the global rules block.
+
 ## Common Commands
 
 ```bash
@@ -44,7 +64,8 @@ make vault-edit          # edit encrypted vault.yml
 make traffic-install     # install Locust into .venv (once after setup)
 make traffic             # headless baseline traffic — all 5 apps, Ctrl+C to stop
 make traffic-ui          # Locust web UI at http://localhost:8089
-TRAFFIC_USERS=25 TRAFFIC_RATE=5 make traffic  # tune rate
+TRAFFIC_USERS=25 TRAFFIC_RATE=5 make traffic                              # tune concurrency
+USER_POOL_SIZE=2000 USER_POOL_SEED_PER_INSTANCE=50 IDENTITY_ROTATION_INTERVAL=5 make traffic  # identity-pool tunables (defaults shown) for VAmPI/CrAPI/JuiceShop
 
 # OWASP API Top 10 attack generator (populates the Noname Runtime tab)
 make traffic-owasp       # headless attack run across all 5 apps
@@ -97,7 +118,7 @@ ansible/
 docker/
   kong/Dockerfile          # FROM kong:latest + luarocks install of Noname Kong plugin; patches prevention.lua
   nginx/Dockerfile         # FROM openresty/openresty:bullseye + Noname Lua scripts; patches prevention.lua
-  nginx/nginx.conf.template # nginx config with Noname Lua hooks; ${APPS_ALB_DNS} substituted at startup
+  nginx/nginx.conf.template # nginx config with Noname Lua hooks; ${APPS_ALB_DNS} substituted at startup; resolver-based runtime DNS (variable proxy_pass + per-location rewrite, no upstream{} blocks) so ALB IP rotation does not cause 502s
   nginx/entrypoint.sh      # Runs envsubst, patches NN_SOURCE_KEY/NN_SOURCE_INDEX, starts OpenResty
   mulesoft/Dockerfile      # FROM mulesoft/flex-gateway:latest; uses COPY --chmod=755 (not RUN chmod); briefly USER root to mkdir+chown conf.d for the nonroot runtime user (uid 65532)
   mulesoft/entrypoint.sh   # Writes FLEX_REGISTRATION_YAML env var to /etc/mulesoft/flex-gateway/conf.d/registration.yaml, logs diagnostics to stderr, then exec's /init
@@ -113,7 +134,7 @@ integration-files/         # Drop Noname-provided .zip files here (gitignored)
 scripts/
   kong-tunnel.sh           # SSH tunnel to Kong Admin API via bastion
   traffic/
-    locustfile.py          # Locust baseline traffic generator — one FastHttpUser class per app
+    locustfile.py          # Locust baseline traffic generator — one FastHttpUser class per app; VAmPI/CrAPI/JuiceShop share a class-level identity pool (target USER_POOL_SIZE authenticated users, rotated every IDENTITY_ROTATION_INTERVAL tasks)
     attackfile.py          # Locust OWASP API Top 10 (2023) attack generator — runs in parallel as a separate locustfile
     requirements.txt       # locust>=2.20.0
 ```
@@ -144,7 +165,7 @@ The `noname_integration` Ansible role authenticates via `POST /auth/token` (serv
 Registering integrations is not enough — each gateway needs a sensor plugin that forwards API traffic to the Noname engine. The plugin is installed by baking it into a custom Docker image, not at runtime:
 
 - **Kong**: `docker/kong/Dockerfile` installs the LuaRocks rock from the zip into `kong:latest`. The task definition adds `KONG_PLUGINS=bundled,nonamesecurity` when `noname_plugin_enabled=true`. The `ansible/plugins.yml` playbook fetches the correct `sourceKey`/`sourceIndex` from `GET /api/v3/sources` and pushes them via the Kong declarative config `/config` endpoint.
-- **NGINX**: `docker/nginx/Dockerfile` builds on `openresty/openresty:bullseye` (which has LuaJIT + lua-nginx-module built in — standard `nginx:latest` does not). The Lua scripts are copied to `/usr/local/openresty/nginx/lua-scripts/`. The `nginx.conf.template` has the Noname hooks baked in; `entrypoint.sh` runs `envsubst` to substitute `${APPS_ALB_DNS}` at container startup.
+- **NGINX**: `docker/nginx/Dockerfile` builds on `openresty/openresty:bullseye` (which has LuaJIT + lua-nginx-module built in — standard `nginx:latest` does not). The Lua scripts are copied to `/usr/local/openresty/nginx/lua-scripts/`. The `nginx.conf.template` has the Noname hooks baked in; `entrypoint.sh` runs `envsubst` to substitute `${APPS_ALB_DNS}` and `${DNS_RESOLVER}` at container startup. The config uses `resolver ${DNS_RESOLVER} valid=10s ipv6=off;` plus `proxy_pass http://$apps_alb:port` (variable in the URL) so NGINX re-resolves the apps ALB hostname every 10 s — without this, AWS rotating an ALB node IP would silently break every `/vampi/*` and `/dvga/*` request until a redeploy. Each location also has an explicit `rewrite ^/<prefix>/(.*)$ /$1 break;` because variable-based `proxy_pass` does not auto-strip the location prefix the way a static `upstream` + `proxy_pass http://up/` does.
 - **prevention.lua type-guard patch**: BOTH Dockerfiles patch the Noname plugin's `prevention.lua` with a `if type(tbl) ~= "table" then return true end` guard before the `next(tbl)` call. The vendor plugin assumes `self._rules` is always a table, but when the engine returns a JSON-string error response, `cjson.decode` produces a Lua string and `next()` crashes with `bad argument #1 to 'next' (table expected, got string)`, returning 500 to the client. Kong patches `/usr/local/share/lua/5.1/kong/plugins/nonamesecurity/prevention.lua`; NGINX patches `/usr/local/openresty/nginx/lua-scripts/prevention.lua`.
 - **Chicken-and-egg**: ECR repos must exist before images can be pushed. `make plugin-images` handles this: creates ECR repos via `terraform apply -target module.ecr`, builds and pushes images, then writes `terraform/plugin.auto.tfvars` (gitignored) with the ECR URIs and `noname_plugin_enabled=true`. A subsequent `make apply` picks up the new image references.
 - **Source key mismatch**: The Kong zip ships with hardcoded `NN_SOURCE_KEY` values that differ from the registered integration's `sourceKey`. The `plugins.yml` playbook fetches the correct values dynamically from `GET /api/v3/sources`, making it generic for any team member's tenant.
@@ -190,6 +211,8 @@ Baseline and attack traffic are deliberately separate locustfiles. Run them as d
 1. **Baseline (`scripts/traffic/locustfile.py`)** — `make traffic` exercises the five vulnerable apps with realistic happy-path requests so the Noname engine can learn normal patterns per source. Let it run ~30 minutes for the first build before declaring the baseline trained.
 2. **Attacks (`scripts/traffic/attackfile.py`)** — `make traffic-owasp` then fires OWASP API Top 10 (2023) attacks against the same gateways. Noname flags these as anomalies against the trained baseline and surfaces them in the Runtime tab as detection events.
 
+**Identity pooling (baseline only).** Noname's behavioural engine learns per-source baselines from the diversity of authenticated users it sees, not from raw request volume — a run with 50 concurrent locust users and 50 distinct tokens is far short of what the engine needs to converge. To raise diversity without flooding the gateways with 2000 concurrent users, each authenticated User class (`VAmPIUser`, `CrAPIUser`, `JuiceShopUser`) maintains a class-level shared `_identity_pool`. On startup each instance registers up to `USER_POOL_SEED_PER_INSTANCE` (default 50) fresh identities and appends them to the pool, capped at `USER_POOL_SIZE` (default 2000). Every `IDENTITY_ROTATION_INTERVAL` (default 5) tasks an instance rotates: if the pool is below target, register a new identity and use it; otherwise pick a random existing pool entry. So the pool grows during the run AND identities get reused once full. `HttpBinUser` and `DVGAUser` are stateless and unchanged. `JuiceShopUser` does register + login (token at `$.authentication.token`) and routes `post_feedback` and `get_basket` through `self.auth`; the rest stay anonymous on purpose to mimic shopper-pre-login traffic. Side effect: the apps' user tables accumulate ~2000 records per service over a long run — only `make destroy` resets them.
+
 The attack file covers 9 of the 10 OWASP API 2023 categories — API1 BOLA, API2 Broken Auth, API3 BOPLA / mass assignment, API4 Unrestricted Resource Consumption, API5 BFLA, API7 SSRF, API8 Security Misconfiguration, API9 Improper Inventory Management. API6 (Sensitive Business Flows) and API10 (Unsafe Consumption of APIs) are intentionally not exercised. Each app gets its own attacker class shaped to its vulnerabilities: `CrAPIAttacker` (Kong `/crapi/`), `VAmPIAttacker` (NGINX `/vampi/`), `DVGAAttacker` (NGINX `/dvga/` GraphQL — introspection, nested-resolver DoS, batch login stuffing), `JuiceShopAttacker` (Flex Gateway `/shop/`), `PixiAttacker` (Kong `/pixi/`).
 
 **Implementation invariants — preserve these or the attack run breaks:**
@@ -218,3 +241,5 @@ The attack file covers 9 of the 10 OWASP API 2023 categories — API1 BOLA, API2
 - After pulling new crAPI images that change env-var shape (TLS/MongoDB/Postgres credential vars), the postgres and mongo volumes must be wiped once with `cd /opt/apps/crapi && sudo docker-compose down -v` on the apps host. The init env vars (`POSTGRES_PASSWORD`, `MONGO_INITDB_ROOT_*`) only apply to a fresh data dir; existing volumes keep the old credentials and break authentication from the application services.
 - **Do not try the Mulesoft custom-policy path against Flex Gateway.** `noname-security-mulesoft-policy.zip` is packaged as a Mule 4 `mule-policy` (POM `<packaging>mule-policy</packaging>`, parent `mule-modules-parent`). API Manager will only apply it to APIs running on the Mule 4 Runtime; APIs running on Flex Gateway show "Not covered: there is no policy implementation for the runtime version where this API is running." Per Noname docs, Flex Gateway is supported via the **Noname Sensor** (the AWS ECS DaemonSet in `terraform/modules/noname/`), not the policy zip — running `install_mule.pyz` against a Flex Gateway proxy API is a dead end.
 - Existing `t3.small` ECS hosts from earlier deploys do not pick up the `t3.medium` launch template automatically. Trigger an ASG instance refresh (or terminate the old hosts one at a time) so the new launch template takes effect. The sensor's 512 MiB will not schedule on the old t3.small instances alongside a gateway task.
+- **NGINX must re-resolve apps_alb at request time, not config load.** `nginx.conf.template` uses a `resolver` directive plus a server-scope `set $apps_alb "${APPS_ALB_DNS}";` and `proxy_pass http://$apps_alb:port` (variable in the URL). NGINX only consults the resolver when the upstream URL contains a variable — the same hostname inside a static `upstream { server hostname; }` block resolves once at config load and caches the IP forever. ALB IPs rotate, so a static upstream silently dies when AWS shuffles nodes (`connect() failed (113: No route to host)`). Pair the variable proxy_pass with an explicit `rewrite ^/<prefix>/(.*)$ /$1 break;` in each location, and drop the trailing slash on `proxy_pass`; variable-based proxy_pass does not auto-strip the location prefix the way a static `upstream` does, and without the rewrite POSTs hit the upstream as `/vampi/users/v1/login` (405) instead of `/users/v1/login`.
+- **Identity pool tunables.** Defaults `USER_POOL_SIZE=2000`, `USER_POOL_SEED_PER_INSTANCE=50`, `IDENTITY_ROTATION_INTERVAL=5`. Lowering `USER_POOL_SIZE` shortens the seed phase but reduces the engine's training diversity. The seed phase is a registration burst at startup — expect ~5–10 min of warm-up before steady state at default settings. Apps databases accumulate ~2000 user records per service over a run; only `make destroy` + redeploy resets them.

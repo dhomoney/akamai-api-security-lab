@@ -41,6 +41,7 @@ make traffic-install     # install Locust into .venv (once after setup)
 make traffic             # headless traffic across all 5 user classes, Ctrl+C to stop
 make traffic-ui          # Locust web UI at http://localhost:8089
 TRAFFIC_USERS=25 TRAFFIC_RATE=5 make traffic  # tune rate
+USER_POOL_SIZE=2000 USER_POOL_SEED_PER_INSTANCE=50 IDENTITY_ROTATION_INTERVAL=5 make traffic  # identity-pool tunables for VAmPI/CrAPI/JuiceShop (defaults shown)
 make traffic-owasp       # OWASP API Top 10 attacks across all 5 apps; run AFTER ~30 min of 'make traffic' so attacks land as anomalies vs the baseline (do not run concurrently — baseline gets poisoned)
 make traffic-owasp-ui    # Locust web UI for the attack file
 ATTACK_USERS=10 ATTACK_RATE=2 make traffic-owasp  # tune attack cadence (intentionally lower than baseline — demo, not flood)
@@ -91,7 +92,7 @@ ansible/
 docker/
   kong/Dockerfile          # FROM kong:latest + luarocks install of Noname Kong plugin; patches prevention.lua
   nginx/Dockerfile         # FROM openresty/openresty:bullseye + Noname Lua scripts; patches prevention.lua
-  nginx/nginx.conf.template # nginx config with Noname Lua hooks; ${APPS_ALB_DNS} substituted at startup
+  nginx/nginx.conf.template # nginx config with Noname Lua hooks; ${APPS_ALB_DNS} substituted at startup; resolver-based runtime DNS (variable proxy_pass + per-location rewrite, no upstream{} blocks)
   nginx/entrypoint.sh      # Runs envsubst, patches NN_SOURCE_KEY/NN_SOURCE_INDEX, starts OpenResty
   mulesoft/Dockerfile      # FROM mulesoft/flex-gateway:latest; USER root briefly to mkdir+chown conf.d for nonroot uid 65532
   mulesoft/entrypoint.sh   # Writes FLEX_REGISTRATION_YAML env var to conf.d/registration.yaml, logs diagnostics, exec /init
@@ -103,7 +104,7 @@ integration-files/         # Drop Noname-provided .zip files here (gitignored)
 
 scripts/
   kong-tunnel.sh           # SSH tunnel to Kong Admin API via bastion
-  traffic/locustfile.py    # Locust traffic generator — 5 FastHttpUser classes (Kong->pixi, NGINX->VAmPI, NGINX->DVGA, Kong->crAPI, Mule->Juice Shop)
+  traffic/locustfile.py    # Locust traffic generator — 5 FastHttpUser classes (Kong->pixi, NGINX->VAmPI, NGINX->DVGA, Kong->crAPI, Mule->Juice Shop); VAmPI/CrAPI/JuiceShop share a class-level identity pool (target 2000 authenticated users, rotated every N tasks)
   traffic/attackfile.py    # OWASP API Top 10 (2023) attack generator — 5 attacker classes, one per app; covers API1-5, API7-9 (skips API6 Sensitive Business Flows, API10 Unsafe Consumption)
   traffic/requirements.txt # locust>=2.20.0
 ```
@@ -178,3 +179,5 @@ Flex Gateway runs in connected mode. The `registration.yaml` (generated via `doc
 - No `version:` key in any Docker Compose files — obsolete in modern Docker.
 - `noname_integration` does a `GET /api/v3/sources` precheck and only POSTs `lab-kong`/`lab-nginx` if the alias is missing. The Noname API does not return 409 on conflict — it just creates duplicates.
 - After pulling new crAPI images that change env-var shape, wipe the postgres+mongo volumes once with `cd /opt/apps/crapi && sudo docker-compose down -v` on the apps host. Init env vars (`POSTGRES_PASSWORD`, `MONGO_INITDB_ROOT_*`) only apply to a fresh data dir.
+- NGINX must re-resolve `apps_alb` at request time. `nginx.conf.template` has no `upstream {}` blocks; it sets `resolver ${DNS_RESOLVER} valid=10s ipv6=off` + `resolver_timeout 5s` at http scope, a server-scope `set $apps_alb "${APPS_ALB_DNS}"`, and uses `proxy_pass http://$apps_alb:port` (variable in URL is what forces the resolver). A static `upstream {}` or bare `proxy_pass http://hostname` resolves once at config load, caches forever, and 502s silently when AWS rotates ALB node IPs (only recovery is a force-new-deployment). Footgun: variable-based `proxy_pass` does NOT auto-strip the location prefix, so each location needs `rewrite ^/<prefix>/(.*)$ /$1 break;` plus `proxy_pass http://$apps_alb:port` (no trailing slash, no path) — without the rewrite the upstream sees `/vampi/users/v1/login` instead of `/users/v1/login` and returns 405.
+- Identity pool in `locustfile.py`: `VAmPIUser`, `CrAPIUser`, and `JuiceShopUser` each hold a class-level `_identity_pool`. `on_start` seeds up to `USER_POOL_SEED_PER_INSTANCE` (default 50) identities, capped at `USER_POOL_SIZE` (default 2000). Every `IDENTITY_ROTATION_INTERVAL` tasks (default 5) the instance registers a new identity if the pool is below target, otherwise picks a random existing one. `HttpBinUser`/`DVGAUser` stay stateless. JuiceShop register+login uses token path `$.authentication.token`; only `post_feedback`/`get_basket` use `self.auth`, the read-only browse tasks stay anonymous. Side effect: the apps databases accumulate ~2000 user records per stateful service over a run — only `make destroy` + redeploy resets them. Startup has a registration burst before steady-state traffic begins.

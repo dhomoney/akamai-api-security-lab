@@ -41,6 +41,8 @@ Internet → ALB (public subnets)
 
 The Kong Admin API (port 8001) is restricted to `admin_cidr` in the security group. The Flex Gateway proxy API is configured in Anypoint API Manager; the Noname Sensor (DaemonSet) gives the engine visibility into Flex Gateway → Juice Shop traffic since the Mulesoft custom-policy path does not apply to Flex Gateway-served APIs (see "Known limitations").
 
+NGINX resolves the apps-ALB hostname at request time (10-second answer cache via the in-config `resolver` directive plus a variable-based `proxy_pass`), so AWS rotating ALB node IPs does not cause sticky 502s.
+
 ---
 
 ## Prerequisites
@@ -336,6 +338,8 @@ Two separate Locust files drive traffic at the lab — run them as distinct phas
 
 **Step 1 — baseline (`make traffic`).** Exercises all five vulnerable apps with realistic happy-path requests so the Noname engine can learn normal patterns per source. Let it run for at least 30 minutes on the first build before moving on.
 
+Noname's behavioural engine learns per-source baselines from the diversity of authenticated identities, not just from raw request volume. Each authenticated User class (`VAmPIUser`, `CrAPIUser`, `JuiceShopUser`) maintains a class-level shared identity pool — instances seed the pool with fresh registrations on `on_start` and rotate through it every few tasks, registering new identities until the pool reaches `USER_POOL_SIZE` and then recycling existing entries. `HttpBinUser` and `DVGAUser` stay stateless (no auth flow to differentiate clients on). Expect a registration burst during the first 5–10 minutes of a run as the pools fill, and ~2000 user records per stateful service accumulating in the apps databases (crAPI Postgres + Mongo, VAmPI SQLite, Juice Shop SQLite) — only `make destroy` + redeploy resets them.
+
 ```bash
 # Install Locust into .venv (once, after make setup)
 make traffic-install
@@ -348,6 +352,9 @@ make traffic-ui
 
 # Tune volume (defaults are 50 users / 5 spawn-rate)
 TRAFFIC_USERS=100 TRAFFIC_RATE=10 make traffic
+
+# Tune identity pooling (defaults shown)
+USER_POOL_SIZE=2000 USER_POOL_SEED_PER_INSTANCE=50 IDENTITY_ROTATION_INTERVAL=5 make traffic
 ```
 
 **Step 2 — OWASP API Top 10 attacks (`make traffic-owasp`).** Once the baseline has trained, fire attacks across the same gateways so Noname's Issues tab populates with detection events. Five attacker classes, one per app:
@@ -525,6 +532,7 @@ aws secretsmanager put-secret-value \
 | `/vampi/users/v1` returns an HTML page with `no such table: users` | VAmPI SQLite DB not initialized | `curl -s http://${NGINX_ALB}/vampi/createdb` (or run `make traffic` — locust does it on first start) |
 | `make provision-plugins` fails immediately with "Connection refused" to Noname tenant | Transient network error to Noname SaaS | Re-run the command — almost always a one-off |
 | NGINX returns 500 for `/vampi/` or `/dvga/`, or Kong returns 500 for `/crapi/*` | Unpatched gateway image deployed (Noname plugin `prevention.lua` bug — `bad argument #1 to 'next' (table expected, got string)` in Kong/NGINX logs) | Rebuild and push the patched images: `make plugin-images && make apply` |
+| NGINX returns 502 for `/vampi/*` or `/dvga/*` with `connect() failed (113: No route to host)` in the NGINX logs | Stale apps-ALB IP cached by NGINX after AWS rotated an ALB node | Self-heals within ~10 s thanks to the runtime resolver in `docker/nginx/nginx.conf.template` (variable-based `proxy_pass` + `resolver … valid=10s`). If it persists, the resolver directive or the `set $apps_alb` line was removed — restore them and rebuild the NGINX image. |
 | `/shop/*` returns `502 Bad Gateway` from envoy | Flex Gateway is registered but no proxy API has been deployed to it from Anypoint API Manager | Deploy a proxy API in Anypoint API Manager pointing at the apps ALB on port 3000 with **Downstream Port 8081** — see "Anypoint API Manager — Juice Shop proxy API" |
 | `lab-aws-ecs` source stays in `PENDING` with 0 requests | Sensor task can't fit on an EC2 host (insufficient memory) — usually after a config change pushed memory above the per-host headroom | Check `aws ecs describe-services …noname-sensor`. Either trim a gateway task's memory or scale the ASG up; sensors are a `DAEMON` schedule so one needs to fit on every host. |
 | `docker: permission denied` | Docker group not active in current shell | Log out and back in, or run `newgrp docker` |
