@@ -1,12 +1,10 @@
 terraform {
+  required_version = ">= 1.5"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 5.0"
-    }
-    tls = {
-      source  = "hashicorp/tls"
-      version = "~> 4.0"
     }
   }
 }
@@ -15,9 +13,6 @@ provider "aws" {
   region  = var.aws_region
   profile = var.aws_profile
 }
-
-data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
 
 module "ecr" {
   source       = "./modules/ecr"
@@ -73,7 +68,6 @@ module "ecs_cluster" {
   source = "./modules/ecs_cluster"
 
   project_name       = var.project_name
-  vpc_id             = module.vpc.vpc_id
   private_subnet_ids = module.vpc.private_subnet_ids
   instance_type      = var.instance_type
   key_name           = aws_key_pair.lab.key_name
@@ -89,11 +83,8 @@ module "kong" {
 
   project_name          = var.project_name
   cluster_id            = module.ecs_cluster.cluster_id
-  cluster_name          = module.ecs_cluster.cluster_name
   vpc_id                = module.vpc.vpc_id
-  private_subnet_ids    = module.vpc.private_subnet_ids
   public_subnet_ids     = module.vpc.public_subnet_ids
-  task_sg_id            = module.security_groups.ecs_sg_id
   alb_sg_id             = module.security_groups.alb_sg_id
   capacity_provider     = module.ecs_cluster.capacity_provider_name
   kong_image            = var.kong_image
@@ -106,11 +97,8 @@ module "nginx" {
 
   project_name        = var.project_name
   cluster_id          = module.ecs_cluster.cluster_id
-  cluster_name        = module.ecs_cluster.cluster_name
   vpc_id              = module.vpc.vpc_id
-  private_subnet_ids  = module.vpc.private_subnet_ids
   public_subnet_ids   = module.vpc.public_subnet_ids
-  task_sg_id          = module.security_groups.ecs_sg_id
   alb_sg_id           = module.security_groups.alb_sg_id
   capacity_provider   = module.ecs_cluster.capacity_provider_name
   nginx_image         = var.nginx_image
@@ -142,11 +130,8 @@ module "mulesoft" {
 
   project_name                 = var.project_name
   cluster_id                   = module.ecs_cluster.cluster_id
-  cluster_name                 = module.ecs_cluster.cluster_name
   vpc_id                       = module.vpc.vpc_id
-  private_subnet_ids           = module.vpc.private_subnet_ids
   public_subnet_ids            = module.vpc.public_subnet_ids
-  task_sg_id                   = module.security_groups.ecs_sg_id
   alb_sg_id                    = module.security_groups.alb_sg_id
   capacity_provider            = module.ecs_cluster.capacity_provider_name
   mule_image                   = var.mule_image
@@ -172,7 +157,6 @@ module "noname" {
 
   project_name = var.project_name
   cluster_id   = module.ecs_cluster.cluster_id
-  cluster_name = module.ecs_cluster.cluster_name
   aws_region   = var.aws_region
 
   noname_engine_url             = var.noname_engine_url
