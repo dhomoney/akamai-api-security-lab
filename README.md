@@ -474,6 +474,24 @@ Use this when you want to point a local tool (Insomnia, Postman, curl) at the Ko
 # Kong Admin API is then available at http://localhost:18001
 ```
 
+### CI lint and the SSH key fallback
+
+The GitHub Actions Lint workflow runs `terraform fmt -check`, `terraform validate`, and `tflint` on every push. `make lint` runs the same checks locally.
+
+`terraform validate` evaluates `file()` calls at parse time — including the one in `aws_key_pair.lab.public_key` that loads `keys/lab_key.pub`. The CI runner has no such file (the `keys/` directory is gitignored, intentionally), so a bare `file(...)` call would fail validate. The resource is wrapped in `fileexists()` with a stub fallback:
+
+```hcl
+resource "aws_key_pair" "lab" {
+  key_name   = "${var.project_name}-key"
+  public_key = fileexists("${path.root}/../keys/lab_key.pub") \
+               ? file("${path.root}/../keys/lab_key.pub") \
+               : "ssh-ed25519 AAAA…AAAA ci-validate-stub"
+  …
+}
+```
+
+The stub only ever reaches AWS if you somehow `make apply` without first running `make keys` — don't do that. Locally, after `make keys`, the real public key is read; in CI the stub keeps validate happy and tflint can run. Same pattern applies if you contribute a new resource that reads a local file: wrap it in `fileexists()` so CI doesn't have to materialise the file.
+
 ---
 
 ## Tear-down
