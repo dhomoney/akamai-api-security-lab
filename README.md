@@ -353,8 +353,11 @@ make traffic-ui
 # Tune volume (defaults are 50 users / 5 spawn-rate)
 TRAFFIC_USERS=100 TRAFFIC_RATE=10 make traffic
 
-# Tune identity pooling (defaults shown)
-USER_POOL_SIZE=2000 USER_POOL_SEED_PER_INSTANCE=50 IDENTITY_ROTATION_INTERVAL=5 make traffic
+# Identity pooling — at default settings (USER_POOL_SIZE=2000, IDENTITY_ROTATION_INTERVAL=5,
+# per-class seeds VAMPI=200/CRAPI=400/JUICESHOP=200) all three authenticated pools cap within
+# ~8 min at TRAFFIC_USERS=50 (VAmPI in under a minute, Juice Shop at ~3 min, crAPI at ~8 min).
+# CRAPI is highest because it has the fewest spawned instances (weight=1 vs 2 for the others).
+USER_POOL_SIZE=2000 USER_POOL_SEED_PER_INSTANCE_VAMPI=200 USER_POOL_SEED_PER_INSTANCE_CRAPI=400 USER_POOL_SEED_PER_INSTANCE_JUICESHOP=200 IDENTITY_ROTATION_INTERVAL=5 make traffic
 ```
 
 **Step 2 — OWASP API Top 10 attacks (`make traffic-owasp`).** Once the baseline has trained, fire attacks across the same gateways so Noname's Issues tab populates with detection events. Five attacker classes, one per app:
