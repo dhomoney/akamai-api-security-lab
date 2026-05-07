@@ -44,7 +44,7 @@ MULE_BASE = f"http://{MULE_ALB_DNS}" if MULE_ALB_DNS else None
 # "auth rejected" (401/403) through "input rejected" (400/422) to "server
 # blew up" (500/502/503). Only network errors should count as failures.
 ATTACK_OK = (200, 201, 204, 301, 302, 303, 304, 400, 401, 403, 404, 405,
-             406, 409, 410, 413, 414, 415, 422, 429, 500, 501, 502, 503)
+             406, 409, 410, 413, 414, 415, 422, 429, 500, 501, 502, 503, 504)
 
 # Common-password lists for credential stuffing — small lists are deliberate;
 # real brute force uses huge dicts but lab demos just need recognisable
@@ -75,7 +75,7 @@ NOSQLI_PAYLOADS = (
 SSRF_TARGETS = (
     "http://169.254.169.254/latest/meta-data/",         # AWS instance metadata
     "http://localhost:8001/status",                     # Kong Admin API
-    "http://10.0.0.1/admin",                            # internal RFC 1918
+    "http://127.0.0.1:9/",                              # discard port — connection refused immediately
     "http://127.0.0.1:22",                              # SSH
     "file:///etc/passwd",                               # local file scheme
     "gopher://localhost:6379/_FLUSHALL",                # Redis via gopher
@@ -106,6 +106,8 @@ class CrAPIAttacker(FastHttpUser):
     host = KONG_BASE
     weight = 2
     wait_time = between(0.5, 2)
+    network_timeout = 20.0
+    connection_timeout = 20.0
 
     def on_start(self):
         # Register a low-privilege user — we'll use this token to attempt
@@ -228,6 +230,8 @@ class VAmPIAttacker(FastHttpUser):
     host = NGINX_BASE
     weight = 2
     wait_time = between(0.5, 2)
+    network_timeout = 20.0
+    connection_timeout = 20.0
 
     @task(4)
     def api2_sqli_login(self):
@@ -494,6 +498,8 @@ class PixiAttacker(FastHttpUser):
     host = KONG_BASE
     weight = 1
     wait_time = between(1, 3)
+    network_timeout = 15.0   # pixi/delay/10 takes 10 s by design
+    connection_timeout = 15.0
 
     @task(3)
     def api4_oversized_payload(self):

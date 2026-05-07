@@ -260,7 +260,8 @@ traffic-owasp: _tf_outputs ## Run OWASP API Top 10 attacks against the lab APIs 
 	  --locustfile $(TRAFFIC_DIR)/attackfile.py \
 	  --users $(ATTACK_USERS) \
 	  --spawn-rate $(ATTACK_RATE) \
-	  --headless
+	  --headless \
+	  --exit-code-on-error 0
 
 traffic-owasp-ui: _tf_outputs ## Launch Locust web UI for the OWASP attack file at http://localhost:8089
 	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
