@@ -22,8 +22,9 @@ ATTACK_USERS  ?= 10
 ATTACK_RATE   ?= 2
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install-terraform keys init plan apply provision provision-check deploy destroy \
-        lint lint-tf lint-ansible vault-init vault-create vault-edit clean _tf_outputs _ssh_cfg _my_ip \
+.PHONY: help setup install-terraform keys configure init plan apply provision provision-check deploy \
+        destroy verify lint lint-tf lint-ansible vault-init vault-create vault-edit clean \
+        _tf_outputs _ssh_cfg _my_ip \
         traffic-install traffic traffic-ui traffic-owasp traffic-owasp-ui \
         _aws_account apply-ecr ecr-login build-plugin-images push-plugin-images plugin-images \
         provision-plugins deploy-plugins
@@ -59,6 +60,9 @@ keys: ## Generate ED25519 SSH keypair for lab instances
 		chmod 600 $(KEYS_DIR)/lab_key; \
 		echo "Keys generated. lab_key is in .gitignore — keep it safe."; \
 	fi
+
+configure: ## Interactive wizard: generate terraform.tfvars and ansible/vault.yml
+	@bash scripts/configure.sh
 
 # ── Terraform ──────────────────────────────────────────────────────────────────
 
@@ -196,6 +200,13 @@ provision-plugins: _tf_outputs ## Push Noname plugin config to Kong; verify NGIN
 		--extra-vars "apps_alb_dns=$(APPS_ALB_DNS) kong_admin_url=$(KONG_ADMIN_URL) nginx_alb_dns=$(NGINX_ALB_DNS)"
 
 deploy-plugins: plugin-images apply provision provision-plugins apply ## Full plugin flow: ECR → images → apply → provision → plugin config → apply (nginx source key)
+
+# ── Verification ───────────────────────────────────────────────────────────────
+
+verify: _tf_outputs ## Smoke-test all gateway routes and Kong plugin/route config
+	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) \
+	MULESOFT_ALB_DNS=$(MULESOFT_ALB_DNS) KONG_ADMIN_URL=$(KONG_ADMIN_URL) \
+	bash scripts/verify.sh
 
 # ── Linting ────────────────────────────────────────────────────────────────────
 
