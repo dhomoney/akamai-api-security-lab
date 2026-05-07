@@ -144,7 +144,15 @@ Until the proxy API deploys, this curl returns `<title>502 Bad Gateway</title>` 
 
 ## Configuration
 
-### terraform/terraform.tfvars
+The fastest path is the interactive wizard:
+
+```bash
+make configure
+```
+
+It prompts for every required value, auto-detects your public IP, writes `terraform/terraform.tfvars`, and creates and encrypts `ansible/vault.yml` in one step. The sections below describe the manual equivalent if you need to edit individual values after the fact.
+
+### terraform/terraform.tfvars (manual)
 
 ```bash
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
@@ -165,7 +173,7 @@ curl -s https://ifconfig.me
 
 The `admin_cidr` is also auto-detected from your current IP when running `make plan`, `make apply`, or `make destroy` — so you don't need to keep it updated in the file.
 
-### ansible/vault.yml
+### ansible/vault.yml (manual)
 
 The vault is an AES256-encrypted YAML file that holds all secrets. The vault password is stored at `~/.vault_pass`.
 
@@ -229,16 +237,12 @@ make keys
 ### Phase 2 — Configuration (one time)
 
 ```bash
-# Copy and edit Terraform variables
-cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-# → Edit: set project_name, aws_profile, admin_cidr
-
-# Create vault password file and encrypt vault.yml from the example template
-make vault-create
-
-# Fill in your Noname tenant URL and service account credentials
-make vault-edit
+make configure
 ```
+
+The interactive wizard prompts for every required value (project name, AWS profile, Noname service account credentials, Anypoint credentials, and optionally the Sensor config from the Noname UI deployment script), auto-detects your public IP for `admin_cidr`, writes `terraform/terraform.tfvars`, and creates and encrypts `ansible/vault.yml` in one step.
+
+If you prefer to configure manually, see the [Configuration](#configuration) section below.
 
 ---
 
@@ -300,33 +304,20 @@ ECS restarts the NGINX container with the correct Noname source credentials as e
 ### Phase 5 — Verification
 
 ```bash
-# Capture ALB hostnames
-KONG_ALB=$(cd terraform && terraform output -raw kong_alb_dns)
-NGINX_ALB=$(cd terraform && terraform output -raw nginx_alb_dns)
-
-# Initialize VAmPI's SQLite database (required once per deployment)
-curl -s http://${NGINX_ALB}/vampi/createdb
-
-# Smoke test each route
-curl -s http://${KONG_ALB}/pixi/uuid                 # → {"uuid": "..."}
-curl -s http://${NGINX_ALB}/vampi/users/v1           # → {"users": [...]}
-curl -s -o /dev/null -w "%{http_code}" http://${KONG_ALB}/crapi/  # → 200
-
-# Flex Gateway (only if the Anypoint proxy API is deployed — see "Anypoint API Manager" section)
-MULE_ALB=$(cd terraform && terraform output -raw mulesoft_alb_dns)
-curl -s -o /dev/null -w "%{http_code}" http://${MULE_ALB}/shop/api/Products  # → 200, or 502 if proxy not yet deployed
-
-# Confirm Kong has the plugin and all three routes
-curl -s http://${KONG_ALB}:8001/plugins | python3 -c \
-  "import sys,json; [print(p['name']) for p in json.load(sys.stdin)['data']]"
-# nonamesecurity
-
-curl -s http://${KONG_ALB}:8001/routes | python3 -c \
-  "import sys,json; [print(r['name']) for r in json.load(sys.stdin)['data']]"
-# crapi-route
-# pixi-route
-# sample-route
+make verify
 ```
+
+Runs seven smoke-tests with color-coded `[PASS]` / `[FAIL]` output:
+
+1. VAmPI database initialization (`/vampi/createdb` — idempotent)
+2. Kong → Pixi route (`/pixi/uuid`)
+3. NGINX → VAmPI users route (`/vampi/users/v1`)
+4. Kong → crAPI route (`/crapi/`)
+5. Flex Gateway → Juice Shop (`/shop/api/Products`) — skipped with a warning if the Anypoint proxy API is not yet deployed
+6. Kong `nonamesecurity` plugin active
+7. Kong routes present: `crapi-route`, `pixi-route`, `sample-route`
+
+Exits 0 when all checks pass, 1 on any failure.
 
 In the Noname UI, Kong, NGINX, and the AWS ECS Sensor (`lab-aws-ecs`) should all show as **Online** within 1–2 minutes of traffic hitting the gateways.
 
@@ -529,7 +520,8 @@ make plugin-images     # Phase 4, step 1 — rebuilds ECR repos; pushes Kong, NG
 make apply             # Phase 4, step 2
 make provision-plugins # Phase 4, step 3
 make apply             # Phase 4, step 4
-# Then Phase 5 verification and Phase 6 traffic
+make verify            # Phase 5 — smoke-test all routes
+# Then Phase 6 traffic
 ```
 
 After rebuild, also re-store the Flex Gateway `registration.yaml` in Secrets Manager — `make destroy` deletes the secret along with all other resources:
