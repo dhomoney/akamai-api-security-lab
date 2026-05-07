@@ -241,7 +241,8 @@ traffic: _tf_outputs ## Run headless traffic generator against lab APIs (Ctrl+C 
 	  --locustfile $(TRAFFIC_DIR)/locustfile.py \
 	  --users $(TRAFFIC_USERS) \
 	  --spawn-rate $(TRAFFIC_RATE) \
-	  --headless
+	  --headless \
+	  --exit-code-on-error 0
 
 traffic-ui: _tf_outputs ## Launch Locust web UI at http://localhost:8089
 	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \

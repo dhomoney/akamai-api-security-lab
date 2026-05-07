@@ -225,31 +225,43 @@ class VAmPIUser(FastHttpUser):
     @task(4)
     def list_users(self):
         self._maybe_rotate()
-        self.client.get("/vampi/users/v1")
+        with self.client.get("/vampi/users/v1", catch_response=True) as r:
+            if r.status_code in (200, 502, 503, 504):
+                r.success()
 
     @task(4)
     def list_books(self):
         self._maybe_rotate()
-        self.client.get("/vampi/books/v1")
+        with self.client.get("/vampi/books/v1", catch_response=True) as r:
+            if r.status_code in (200, 502, 503, 504):
+                r.success()
 
     @task(3)
     def create_book(self):
         self._maybe_rotate()
-        self.client.post("/vampi/books/v1",
-                         json={"book_title": uid(), "secret": uid()},
-                         headers=self.auth)
+        with self.client.post("/vampi/books/v1",
+                              json={"book_title": uid(), "secret": uid()},
+                              headers=self.auth,
+                              catch_response=True) as r:
+            # 401 when backend restarts and wipes SQLite — pool tokens become stale.
+            if r.status_code in (200, 201, 401, 502, 503, 504):
+                r.success()
 
     @task(2)
     def reauth(self):
         # Re-login the current identity. Mirrors a real user whose token
         # expired and who logs back in. Keeps /login traffic in the mix.
-        resp = self.client.post("/vampi/users/v1/login",
-                                name="/vampi/users/v1/login",
-                                json={"username": self.username, "password": self.password})
-        if resp.status_code == 200:
-            token = resp.json().get("auth_token")
-            if token:
-                self.auth = {"Authorization": f"Bearer {token}"}
+        with self.client.post("/vampi/users/v1/login",
+                              name="/vampi/users/v1/login",
+                              json={"username": self.username, "password": self.password},
+                              catch_response=True) as r:
+            if r.status_code == 200:
+                token = r.json().get("auth_token")
+                if token:
+                    self.auth = {"Authorization": f"Bearer {token}"}
+                r.success()
+            elif r.status_code in (502, 503, 504):
+                r.success()
 
     @task(2)
     def get_book_by_title(self):
@@ -260,7 +272,7 @@ class VAmPIUser(FastHttpUser):
                              name="/vampi/books/v1/{title}",
                              headers=self.auth,
                              catch_response=True) as r:
-            if r.status_code in (200, 401, 404):
+            if r.status_code in (200, 401, 404, 502, 503, 504):
                 r.success()
 
 
@@ -273,31 +285,45 @@ class DVGAUser(FastHttpUser):
 
     @task(4)
     def query_pastes(self):
-        self.client.post("/dvga/graphql",
-                         json=gql("{ pastes { title content } }"))
+        with self.client.post("/dvga/graphql",
+                              json=gql("{ pastes { title content } }"),
+                              catch_response=True) as r:
+            if r.status_code in (200, 502, 503, 504):
+                r.success()
 
     @task(3)
     def query_users(self):
-        self.client.post("/dvga/graphql",
-                         json=gql("{ users { username } }"))
+        with self.client.post("/dvga/graphql",
+                              json=gql("{ users { username } }"),
+                              catch_response=True) as r:
+            if r.status_code in (200, 502, 503, 504):
+                r.success()
 
     @task(3)
     def query_health(self):
-        self.client.post("/dvga/graphql",
-                         json=gql("{ systemHealth }"))
+        with self.client.post("/dvga/graphql",
+                              json=gql("{ systemHealth }"),
+                              catch_response=True) as r:
+            if r.status_code in (200, 502, 503, 504):
+                r.success()
 
     @task(3)
     def create_paste(self):
-        self.client.post("/dvga/graphql", json=gql(
+        with self.client.post("/dvga/graphql", json=gql(
             'mutation { createPaste(title:"lab", content:"' + uid() + '", public:true)'
             ' { paste { title } } }'
-        ))
+        ), catch_response=True) as r:
+            if r.status_code in (200, 502, 503, 504):
+                r.success()
 
     @task(1)
     def introspect(self):
         # Intentional introspection — Noname learns to detect this pattern
-        self.client.post("/dvga/graphql",
-                         json=gql("{ __schema { types { name } } }"))
+        with self.client.post("/dvga/graphql",
+                              json=gql("{ __schema { types { name } } }"),
+                              catch_response=True) as r:
+            if r.status_code in (200, 502, 503, 504):
+                r.success()
 
 
 class CrAPIUser(FastHttpUser):
@@ -414,7 +440,7 @@ class CrAPIUser(FastHttpUser):
                         headers=self.auth)
 
 
-_JUICESHOP_OK = (200, 201, 204, 304, 400, 401, 403, 404, 409, 500)
+_JUICESHOP_OK = (200, 201, 204, 304, 400, 401, 403, 404, 409, 500, 502, 503, 504)
 _JUICESHOP_SEARCH_TERMS = ("apple", "juice", "lemon", "banana", "eggfruit", "raspberry", "melon")
 
 
