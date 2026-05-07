@@ -67,6 +67,22 @@ aws sso login --profile SA_Standard_Access-491489166083
 
 Run this again any time you see `Token has expired` or `SSO` errors in command output.
 
+### Anypoint Platform account (free trial)
+
+Flex Gateway runs in **connected mode** and requires an Anypoint Platform account to register with. If you don't have one, sign up for a free trial at:
+
+> **https://anypoint.mulesoft.com/login/signup**
+
+The free trial gives you full access to Anypoint Platform for 30 days — enough to complete and demo this lab. No credit card is required.
+
+Once logged in, you will need:
+
+1. **Organisation ID** — shown in the top-right menu under your username → **Business Groups**. You pass this to the `flexctl registration create` command when generating `registration.yaml`.
+2. **Connected App credentials** — go to **Access Management → Connected Apps → Create app**, select "App acts on its own behalf (client credentials)", and grant the **Manage Flex Gateways** and **Manage APIs** scopes. The app's Client ID and Secret are used as `--token` when running `flexctl registration create`.
+3. **API Manager access** — used in Phase 4 to deploy the Juice Shop proxy API to the registered Flex Gateway runtime.
+
+Keep your Anypoint credentials (org ID and Connected App client ID/secret) handy for `make configure` — it will prompt for them.
+
 ---
 
 ## Files you need from Noname/Akamai
