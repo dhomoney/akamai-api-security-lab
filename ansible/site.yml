@@ -32,12 +32,6 @@
   roles:
     - nginx
 
-- name: Verify Flex Gateway (MuleSoft) is reachable
-  hosts: localhost
-  gather_facts: false
-  roles:
-    - mulesoft
-
 - name: Configure Noname gateway integrations
   hosts: localhost
   gather_facts: false

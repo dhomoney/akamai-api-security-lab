@@ -92,7 +92,7 @@ _tf_outputs:
 	$(eval NGINX_ALB_DNS   := $(shell cd $(TF_DIR) && terraform output -raw nginx_alb_dns 2>/dev/null))
 	$(eval KONG_ALB_DNS    := $(shell cd $(TF_DIR) && terraform output -raw kong_alb_dns 2>/dev/null))
 	$(eval ECS_CLUSTER       := $(shell cd $(TF_DIR) && terraform output -raw ecs_cluster_name 2>/dev/null))
-	$(eval MULESOFT_ALB_DNS  := $(shell cd $(TF_DIR) && terraform output -raw mulesoft_alb_dns 2>/dev/null))
+	$(eval API_GW_URL        := $(shell cd $(TF_DIR) && terraform output -raw api_gateway_url 2>/dev/null))
 	@if [ -z "$(BASTION_IP)" ]; then \
 		echo "ERROR: Could not read Terraform outputs. Run 'make apply' first."; exit 1; fi
 
@@ -106,7 +106,7 @@ provision: _ssh_cfg ## Run Ansible playbooks against live infrastructure
 		--vault-password-file $(VAULT_PASS) \
 		--private-key ../$(KEYS_DIR)/lab_key \
 		--ssh-common-args="-F /tmp/lab-ssh.cfg" \
-		--extra-vars "apps_alb_dns=$(APPS_ALB_DNS) kong_admin_url=$(KONG_ADMIN_URL) nginx_alb_dns=$(NGINX_ALB_DNS) mulesoft_alb_dns=$(MULESOFT_ALB_DNS)"
+		--extra-vars "apps_alb_dns=$(APPS_ALB_DNS) kong_admin_url=$(KONG_ADMIN_URL) nginx_alb_dns=$(NGINX_ALB_DNS) api_gateway_url=$(API_GW_URL)"
 
 provision-check: _ssh_cfg ## Dry-run Ansible (--check mode)
 	cd $(ANSIBLE_DIR) && \
@@ -114,7 +114,7 @@ provision-check: _ssh_cfg ## Dry-run Ansible (--check mode)
 		--vault-password-file $(VAULT_PASS) \
 		--private-key ../$(KEYS_DIR)/lab_key \
 		--ssh-common-args="-F /tmp/lab-ssh.cfg" \
-		--extra-vars "apps_alb_dns=$(APPS_ALB_DNS) kong_admin_url=$(KONG_ADMIN_URL) nginx_alb_dns=$(NGINX_ALB_DNS) mulesoft_alb_dns=$(MULESOFT_ALB_DNS)" \
+		--extra-vars "apps_alb_dns=$(APPS_ALB_DNS) kong_admin_url=$(KONG_ADMIN_URL) nginx_alb_dns=$(NGINX_ALB_DNS) api_gateway_url=$(API_GW_URL)" \
 		--check --diff
 
 vault-init: ## Create ~/.vault_pass with a random password (run once, keep it safe)
@@ -164,28 +164,23 @@ ecr-login: _aws_account ## Authenticate Docker to ECR
 	aws ecr get-login-password --region $(AWS_REGION) --profile $(AWS_PROFILE) | \
 	  docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
 
-build-plugin-images: ## Build Kong, NGINX, and Flex Gateway Docker images
+build-plugin-images: ## Build Kong and NGINX Docker images
 	docker build -f docker/kong/Dockerfile -t $(PROJECT_NAME)/kong:latest .
 	docker build -f docker/nginx/Dockerfile -t $(PROJECT_NAME)/nginx:latest .
-	docker build -f docker/mulesoft/Dockerfile -t $(PROJECT_NAME)/mulesoft:latest .
 
 push-plugin-images: ## Tag and push plugin images to ECR (reads URIs from terraform output)
-	$(eval KONG_ECR     := $(shell cd $(TF_DIR) && terraform output -raw kong_ecr_uri 2>/dev/null))
-	$(eval NGINX_ECR    := $(shell cd $(TF_DIR) && terraform output -raw nginx_ecr_uri 2>/dev/null))
-	$(eval MULESOFT_ECR := $(shell cd $(TF_DIR) && terraform output -raw mulesoft_ecr_uri 2>/dev/null))
-	docker tag $(PROJECT_NAME)/kong:latest     $(KONG_ECR):latest
-	docker tag $(PROJECT_NAME)/nginx:latest    $(NGINX_ECR):latest
-	docker tag $(PROJECT_NAME)/mulesoft:latest $(MULESOFT_ECR):latest
+	$(eval KONG_ECR  := $(shell cd $(TF_DIR) && terraform output -raw kong_ecr_uri 2>/dev/null))
+	$(eval NGINX_ECR := $(shell cd $(TF_DIR) && terraform output -raw nginx_ecr_uri 2>/dev/null))
+	docker tag $(PROJECT_NAME)/kong:latest  $(KONG_ECR):latest
+	docker tag $(PROJECT_NAME)/nginx:latest $(NGINX_ECR):latest
 	docker push $(KONG_ECR):latest
 	docker push $(NGINX_ECR):latest
-	docker push $(MULESOFT_ECR):latest
 
-plugin-images: apply-ecr ecr-login build-plugin-images push-plugin-images ## Build, push all plugin images and write plugin.auto.tfvars (run once per lab)
-	$(eval KONG_ECR     := $(shell cd $(TF_DIR) && terraform output -raw kong_ecr_uri 2>/dev/null))
-	$(eval NGINX_ECR    := $(shell cd $(TF_DIR) && terraform output -raw nginx_ecr_uri 2>/dev/null))
-	$(eval MULESOFT_ECR := $(shell cd $(TF_DIR) && terraform output -raw mulesoft_ecr_uri 2>/dev/null))
-	@printf 'kong_image            = "%s:latest"\nnginx_image           = "%s:latest"\nmule_image            = "%s:latest"\nnoname_plugin_enabled = true\n' \
-	  "$(KONG_ECR)" "$(NGINX_ECR)" "$(MULESOFT_ECR)" > $(TF_DIR)/plugin.auto.tfvars
+plugin-images: apply-ecr ecr-login build-plugin-images push-plugin-images ## Build, push Kong+NGINX plugin images and write plugin.auto.tfvars (run once per lab)
+	$(eval KONG_ECR  := $(shell cd $(TF_DIR) && terraform output -raw kong_ecr_uri 2>/dev/null))
+	$(eval NGINX_ECR := $(shell cd $(TF_DIR) && terraform output -raw nginx_ecr_uri 2>/dev/null))
+	@printf 'kong_image            = "%s:latest"\nnginx_image           = "%s:latest"\nnoname_plugin_enabled = true\n' \
+	  "$(KONG_ECR)" "$(NGINX_ECR)" > $(TF_DIR)/plugin.auto.tfvars
 	@echo "Wrote $(TF_DIR)/plugin.auto.tfvars — run 'make apply' to update ECS task definitions."
 
 provision-plugins: _tf_outputs ## Push Noname plugin config to Kong; verify NGINX health
@@ -205,7 +200,7 @@ deploy-plugins: plugin-images apply provision provision-plugins apply ## Full pl
 
 verify: _tf_outputs ## Smoke-test all gateway routes and Kong plugin/route config
 	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) \
-	MULESOFT_ALB_DNS=$(MULESOFT_ALB_DNS) KONG_ADMIN_URL=$(KONG_ADMIN_URL) \
+	API_GW_URL=$(API_GW_URL) KONG_ADMIN_URL=$(KONG_ADMIN_URL) \
 	bash scripts/verify.sh
 
 # ── Linting ────────────────────────────────────────────────────────────────────
@@ -234,9 +229,9 @@ traffic-install: ## Install Locust into .venv for traffic generation
 
 traffic: _tf_outputs ## Run headless traffic generator against lab APIs (Ctrl+C to stop)
 	# NOTE: --host is intentionally omitted. Locust's CLI --host overrides the
-	# per-User host= attribute (Kong / NGINX / Mulesoft), which sends every
+	# per-User host= attribute (Kong / NGINX / API Gateway), which sends every
 	# request to the same gateway and produces 100% 404s on the wrong routes.
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
+	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/locustfile.py \
 	  --users $(TRAFFIC_USERS) \
@@ -245,7 +240,7 @@ traffic: _tf_outputs ## Run headless traffic generator against lab APIs (Ctrl+C 
 	  --exit-code-on-error 0
 
 traffic-ui: _tf_outputs ## Launch Locust web UI at http://localhost:8089
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
+	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/locustfile.py
 
@@ -256,7 +251,7 @@ traffic-owasp: _tf_outputs ## Run OWASP API Top 10 attacks against the lab APIs 
 	# has built a behavioural baseline (~30 min) so attacks show as anomalies
 	# rather than seeded normal patterns. Like 'make traffic', --host is
 	# omitted so the per-User host attribute is honoured.
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
+	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/attackfile.py \
 	  --users $(ATTACK_USERS) \
@@ -265,6 +260,6 @@ traffic-owasp: _tf_outputs ## Run OWASP API Top 10 attacks against the lab APIs 
 	  --exit-code-on-error 0
 
 traffic-owasp-ui: _tf_outputs ## Launch Locust web UI for the OWASP attack file at http://localhost:8089
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) MULE_ALB_DNS=$(MULESOFT_ALB_DNS) \
+	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/attackfile.py

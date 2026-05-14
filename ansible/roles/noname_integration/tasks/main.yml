@@ -98,3 +98,23 @@
             - "x-forwarded-host"
         status_code: [200, 201]
       when: "'lab-nginx' not in noname_existing_aliases"
+
+    - name: Register AWS API Gateway connector with Noname (only if not already present)
+      ansible.builtin.uri:
+        url: "{{ vault_noname_tenant_url | regex_replace('/$', '') }}/api/v3/connectors/1"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ noname_access_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          alias: "lab-api-gateway"
+          integrationMethod: "MANUAL"
+          settings:
+            engineId: "{{ noname_engine_id }}"
+            deploymentMethod: "CLOUDFORMATION"
+            deploymentScope: "CENTRALIZED"
+          hostHeaders:
+            - "x-forwarded-host"
+        status_code: [200, 201]
+      when: "'lab-api-gateway' not in noname_existing_aliases"

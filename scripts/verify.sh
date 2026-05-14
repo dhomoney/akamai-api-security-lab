@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke-tests all gateway routes and Kong plugin/route config.
 # Called by 'make verify' with KONG_ALB_DNS, NGINX_ALB_DNS,
-# MULESOFT_ALB_DNS, and KONG_ADMIN_URL exported from Makefile _tf_outputs.
+# API_GW_URL, and KONG_ADMIN_URL exported from Makefile _tf_outputs.
 set -uo pipefail
 
 GREEN='\033[0;32m'
@@ -69,20 +69,18 @@ else
     fail "crAPI route returned HTTP ${STATUS}"
 fi
 
-# 5. Flex Gateway → Juice Shop (skipped when MULESOFT_ALB_DNS is absent)
+# 5. API Gateway → Juice Shop (skipped when API_GW_URL is absent)
 echo ""
-echo -e "${BOLD}5. Flex Gateway → Juice Shop route${RESET}"
-if [[ -z "${MULESOFT_ALB_DNS:-}" ]]; then
-    warn "MULESOFT_ALB_DNS not set — skipping Flex Gateway check"
+echo -e "${BOLD}5. API Gateway → Juice Shop route${RESET}"
+if [[ -z "${API_GW_URL:-}" ]]; then
+    warn "API_GW_URL not set — skipping API Gateway check"
 else
     STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
-        "http://${MULESOFT_ALB_DNS}/shop/api/Products" 2>/dev/null || echo "000")
+        "${API_GW_URL}/shop/api/Products" 2>/dev/null || echo "000")
     if [[ "${STATUS}" == "200" ]]; then
-        pass "Flex Gateway → Juice Shop OK (HTTP ${STATUS})"
-    elif [[ "${STATUS}" == "502" ]]; then
-        warn "Flex Gateway returned 502 — the Anypoint proxy API may not be deployed yet (see README Anypoint API Manager section)"
+        pass "API Gateway → Juice Shop OK (HTTP ${STATUS})"
     else
-        fail "Flex Gateway returned HTTP ${STATUS}"
+        fail "API Gateway returned HTTP ${STATUS} (expected 200)"
     fi
 fi
 

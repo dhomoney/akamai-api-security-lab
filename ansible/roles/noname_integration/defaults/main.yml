@@ -1,7 +1,7 @@
 ---
 kong_admin_url:           "http://localhost:8001"
 nginx_status_url:         "http://localhost:8080/nginx_status"
-mulesoft_api_url:         "http://localhost:8081"
+api_gateway_url:          ""
 vault_noname_tenant_url:  ""
 vault_noname_client_id:   ""
 vault_noname_client_secret: ""

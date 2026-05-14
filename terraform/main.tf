@@ -108,35 +108,25 @@ module "nginx" {
   tags                = local.common_tags
 }
 
-resource "aws_secretsmanager_secret" "flex_registration_yaml" {
-  name                    = "/${var.project_name}/mulesoft/registration-yaml"
-  description             = "Flex Gateway registration.yaml — generated via 'flexctl registration create'"
-  recovery_window_in_days = 0
+module "noname_connector" {
+  source = "./modules/noname_connector"
 
-  tags = local.common_tags
+  project_name      = var.project_name
+  cfn_template_path = fileexists("${path.root}/../integration-files/noname-aws-connector-forwarder.yaml") ? "${path.root}/../integration-files/noname-aws-connector-forwarder.yaml" : "${path.root}/../integration-files/noname-aws-connector-forwarder.json"
+  organization_id   = var.aws_org_id
+  tags              = local.common_tags
 }
 
-resource "aws_secretsmanager_secret_version" "flex_registration_yaml" {
-  secret_id     = aws_secretsmanager_secret.flex_registration_yaml.id
-  secret_string = "PLACEHOLDER"
+module "aws_api_gateway" {
+  source = "./modules/aws_api_gateway"
 
-  lifecycle {
-    ignore_changes = [secret_string]
-  }
-}
-
-module "mulesoft" {
-  source = "./modules/mulesoft"
-
-  project_name                 = var.project_name
-  cluster_id                   = module.ecs_cluster.cluster_id
-  vpc_id                       = module.vpc.vpc_id
-  public_subnet_ids            = module.vpc.public_subnet_ids
-  alb_sg_id                    = module.security_groups.alb_sg_id
-  capacity_provider            = module.ecs_cluster.capacity_provider_name
-  mule_image                   = var.mule_image
-  registration_yaml_secret_arn = aws_secretsmanager_secret.flex_registration_yaml.arn
-  tags                         = local.common_tags
+  project_name               = var.project_name
+  vpc_id                     = module.vpc.vpc_id
+  private_subnet_ids         = module.vpc.private_subnet_ids
+  juiceshop_alb_listener_arn = module.vulnerable_apps.app_listener_arns["juiceshop"]
+  apps_alb_sg_id             = module.vulnerable_apps.apps_alb_sg_id
+  kinesis_stream_arn         = module.noname_connector.kinesis_stream_arn
+  tags                       = local.common_tags
 }
 
 module "vulnerable_apps" {

@@ -9,11 +9,6 @@ vault_aws_secret_key: "REPLACE"
 # Kong admin credentials (if auth plugin enabled)
 vault_kong_admin_token: "REPLACE"
 
-# MuleSoft Anypoint Platform
-vault_anypoint_client_id: "REPLACE"
-vault_anypoint_client_secret: "REPLACE"
-vault_mule_license_key: "REPLACE"
-
 # Noname / Akamai API Security
 vault_noname_tenant_url: "https://YOURTENANTNAME.nonamesec.com"
 vault_noname_client_id: "REPLACE"             # service account client ID

@@ -7,13 +7,13 @@ from locust import FastHttpUser, between, task
 
 KONG_ALB_DNS = os.environ.get("KONG_ALB_DNS")
 NGINX_ALB_DNS = os.environ.get("NGINX_ALB_DNS")
-MULE_ALB_DNS = os.environ.get("MULE_ALB_DNS")
+API_GW_URL = os.environ.get("API_GW_URL")
 if not KONG_ALB_DNS or not NGINX_ALB_DNS:
     sys.exit("ERROR: KONG_ALB_DNS and NGINX_ALB_DNS must be set. Run via 'make traffic'.")
 
 KONG_BASE = f"http://{KONG_ALB_DNS}"
 NGINX_BASE = f"http://{NGINX_ALB_DNS}"
-MULE_BASE = f"http://{MULE_ALB_DNS}" if MULE_ALB_DNS else None
+API_GW_BASE = API_GW_URL if API_GW_URL else None
 
 # ─── Identity pooling ────────────────────────────────────────────────────────
 #
@@ -445,10 +445,10 @@ _JUICESHOP_SEARCH_TERMS = ("apple", "juice", "lemon", "banana", "eggfruit", "ras
 
 
 class JuiceShopUser(FastHttpUser):
-    """OWASP Juice Shop via Anypoint Flex Gateway proxy /shop/*. Maintains an
+    """OWASP Juice Shop via AWS API Gateway proxy /shop/*. Maintains an
     authenticated-identity pool so Noname sees a diverse set of users on
     Juice Shop endpoints that are user-context-aware (basket, feedback).
-    Concrete subclass `_JuiceShopUser` only registers when MULE_ALB_DNS is set.
+    Concrete subclass `_JuiceShopUser` only registers when API_GW_URL is set.
     """
 
     abstract = True
@@ -643,8 +643,8 @@ class JuiceShopUser(FastHttpUser):
                 r.success()
 
 
-if MULE_BASE:
-    # Concrete subclass with host set; only registered when MULE_ALB_DNS is provided
+if API_GW_BASE:
+    # Concrete subclass with host set; only registered when API_GW_URL is provided
     class _JuiceShopUser(JuiceShopUser):
         abstract = False
-        host = MULE_BASE
+        host = API_GW_BASE

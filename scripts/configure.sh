@@ -103,12 +103,6 @@ if [[ "${SKIP_VAULT}" != "true" ]]; then
     prompt NONAME_CLIENT_ID     "Service account client ID" ""
     prompt NONAME_CLIENT_SECRET "Service account client secret (hidden)" "" "true"
 
-    # ── Anypoint Platform ──────────────────────────────────────────────────────
-    echo ""
-    echo -e "${BOLD}── Anypoint Platform (MuleSoft Flex Gateway) ───────────────────${RESET}"
-    prompt ANYPOINT_CLIENT_ID     "Anypoint client ID" ""
-    prompt ANYPOINT_CLIENT_SECRET "Anypoint client secret (hidden)" "" "true"
-    prompt MULE_LICENSE_KEY       "Mule license key — leave blank to skip (hidden)" "" "true"
 fi
 
 # ── Noname Sensor (optional) ───────────────────────────────────────────────────
@@ -193,11 +187,6 @@ vault_aws_secret_key: "REPLACE"
 
 # Kong admin token — leave as REPLACE if Kong auth plugin is not enabled
 vault_kong_admin_token: "REPLACE"
-
-# MuleSoft Anypoint Platform
-vault_anypoint_client_id:     "${ANYPOINT_CLIENT_ID:-REPLACE}"
-vault_anypoint_client_secret: "${ANYPOINT_CLIENT_SECRET:-REPLACE}"
-vault_mule_license_key:       "${MULE_LICENSE_KEY:-REPLACE}"
 
 # Noname / Akamai API Security
 vault_noname_tenant_url:    "${NONAME_TENANT_URL:-REPLACE}"

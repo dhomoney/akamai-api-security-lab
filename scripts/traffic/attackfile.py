@@ -31,13 +31,13 @@ from locust import FastHttpUser, between, task
 
 KONG_ALB_DNS = os.environ.get("KONG_ALB_DNS")
 NGINX_ALB_DNS = os.environ.get("NGINX_ALB_DNS")
-MULE_ALB_DNS = os.environ.get("MULE_ALB_DNS")
+API_GW_URL = os.environ.get("API_GW_URL")
 if not KONG_ALB_DNS or not NGINX_ALB_DNS:
     sys.exit("ERROR: KONG_ALB_DNS and NGINX_ALB_DNS must be set. Run via 'make traffic-owasp'.")
 
 KONG_BASE = f"http://{KONG_ALB_DNS}"
 NGINX_BASE = f"http://{NGINX_ALB_DNS}"
-MULE_BASE = f"http://{MULE_ALB_DNS}" if MULE_ALB_DNS else None
+API_GW_BASE = API_GW_URL if API_GW_URL else None
 
 # Attacks deliberately produce 4xx/5xx — we don't want locust treating those
 # as failures and polluting the stats. This tuple covers everything from
@@ -355,7 +355,7 @@ class DVGAAttacker(FastHttpUser):
                 r.success()
 
 
-# ─── Juice Shop — full OWASP catalogue via Mulesoft Flex Gateway ─────────────
+# ─── Juice Shop — full OWASP catalogue via AWS API Gateway ───────────────────
 
 
 class JuiceShopAttacker(FastHttpUser):
@@ -483,10 +483,10 @@ class JuiceShopAttacker(FastHttpUser):
                 r.success()
 
 
-if MULE_BASE:
+if API_GW_BASE:
     class _JuiceShopAttacker(JuiceShopAttacker):
         abstract = False
-        host = MULE_BASE
+        host = API_GW_BASE
 
 
 # ─── pixi (go-httpbin) — payload abuse and method bypass via Kong /pixi/ ─────

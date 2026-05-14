@@ -1,6 +1,6 @@
 # Akamai API Security Lab
 
-Repeatable AWS lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform, configures it via Ansible, and runs five vulnerable API applications behind three API gateways. All three Noname traffic sources — Kong plugin, NGINX plugin, and the AWS ECS host-level Sensor — register with the engine and report end-to-end.
+Repeatable AWS lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform, configures it via Ansible, and runs five vulnerable API applications behind three API gateways. All three Noname traffic sources — Kong plugin, NGINX plugin, and the AWS API Gateway connector — register with the engine and report end-to-end.
 
 **Region**: us-east-2 (Ohio) | **Terraform state**: local
 
@@ -10,22 +10,27 @@ Repeatable AWS lab environment for testing and learning Akamai API Security (for
 
 ```
 Internet → ALB (public subnets)
-              ├── Kong OSS ALB              port 8000 (proxy), 8001 (admin)
-              ├── NGINX/OpenResty ALB       port 80
-              └── Anypoint Flex Gateway ALB port 80
+              ├── Kong OSS ALB        port 8000 (proxy), 8001 (admin)
+              └── NGINX/OpenResty ALB port 80
+
+Internet → AWS API Gateway (HTTP API, $default stage)
+              └── VPC Link → apps internal ALB :3000 (Juice Shop)
 
            ECS EC2 cluster (private subnets, t3.medium)
-              ├── Kong OSS container              ← nonamesecurity plugin baked in   (lab-kong)
-              ├── NGINX/OpenResty container       ← Noname Lua plugin baked in       (lab-nginx)
-              ├── Anypoint Flex Gateway container ← registration.yaml from Secrets Manager
-              └── Noname Sensor (DaemonSet)       ← one per host, host-network NIC sniff (lab-aws-ecs)
+              ├── Kong OSS container        ← nonamesecurity plugin baked in  (lab-kong)
+              ├── NGINX/OpenResty container ← Noname Lua plugin baked in      (lab-nginx)
+              └── Noname Sensor (DaemonSet) ← one per host, host-network NIC sniff
 
            Apps host EC2 (private subnet)
               ├── crAPI       :8080   OWASP crAPI vulnerable app
               ├── Pixi        :8888   go-httpbin (stateless REST)
               ├── VAmPI       :5000   Flask/SQLite vulnerable REST API
               ├── DVGA        :5013   Flask/Graphene vulnerable GraphQL API
-              └── Juice Shop  :3000   OWASP Juice Shop (behind Flex Gateway proxy)
+              └── Juice Shop  :3000   OWASP Juice Shop (behind API Gateway proxy)
+
+           Noname Forwarder stack (CloudFormation)
+              └── Kinesis stream ← CloudWatch subscription filter ← API Gateway access logs
+                      └── Sender Lambda → Noname engine            (lab-api-gateway)
 ```
 
 **Traffic routing:**
@@ -37,9 +42,9 @@ Internet → ALB (public subnets)
 | Kong | `/sample/` | httpbin.org |
 | NGINX | `/vampi/` | apps:5000 |
 | NGINX | `/dvga/` | apps:5013 |
-| Flex Gateway | `/shop/` | apps:3000 (Juice Shop) |
+| API Gateway | `/shop/{proxy+}` | apps:3000 (Juice Shop) |
 
-The Kong Admin API (port 8001) is restricted to `admin_cidr` in the security group. The Flex Gateway proxy API is configured in Anypoint API Manager; the Noname Sensor (DaemonSet) gives the engine visibility into Flex Gateway → Juice Shop traffic since the Mulesoft custom-policy path does not apply to Flex Gateway-served APIs (see "Known limitations").
+The Kong Admin API (port 8001) is restricted to `admin_cidr` in the security group. API Gateway access logs flow to CloudWatch, then through a Kinesis subscription filter to the Noname Forwarder Lambda, giving the engine visibility into JuiceShop traffic as the `lab-api-gateway` connector.
 
 NGINX resolves the apps-ALB hostname at request time (10-second answer cache via the in-config `resolver` directive plus a variable-based `proxy_pass`), so AWS rotating ALB node IPs does not cause sticky 502s.
 
@@ -67,32 +72,26 @@ aws sso login --profile SA_Standard_Access-491489166083
 
 Run this again any time you see `Token has expired` or `SSO` errors in command output.
 
-### Anypoint Platform account (free trial)
-
-Flex Gateway runs in **connected mode** and requires an Anypoint Platform account to register with. If you don't have one, sign up for a free trial at:
-
-> **https://anypoint.mulesoft.com/login/signup**
-
-The free trial gives you full access to Anypoint Platform for 30 days — enough to complete and demo this lab. No credit card is required.
-
-Once logged in, you will need:
-
-1. **Organisation ID** — shown in the top-right menu under your username → **Business Groups**. You pass this to the `flexctl registration create` command when generating `registration.yaml`.
-2. **Connected App credentials** — go to **Access Management → Connected Apps → Create app**, select "App acts on its own behalf (client credentials)", and grant the **Manage Flex Gateways** and **Manage APIs** scopes. The app's Client ID and Secret are used as `--token` when running `flexctl registration create`.
-3. **API Manager access** — used in Phase 4 to deploy the Juice Shop proxy API to the registered Flex Gateway runtime.
-
-Keep your Anypoint credentials (org ID and Connected App client ID/secret) handy for `make configure` — it will prompt for them.
-
 ---
 
 ## Files you need from Noname/Akamai
 
-The Noname plugin zip files are not included in this repo. Obtain them from your Akamai/Noname tenant and drop them in `integration-files/` before running `make plugin-images`.
+The following files are not included in this repo and must be obtained separately.
 
 | File | Where to get it |
 |---|---|
 | `integration-files/noname-security-kong-policy.zip` | Akamai/Noname tenant portal or support |
 | `integration-files/noname-security-nginx-policy.zip` | Akamai/Noname tenant portal or support |
+| `integration-files/noname-aws-connector-forwarder.yaml` | Noname UI: Settings → Integrations → Traffic Sources → Add Integration → AWS Connector → Manual → download ZIP, extract YAML |
+
+The `noname-aws-connector-forwarder.yaml` CloudFormation template must be present **before** `make apply` — the `noname_connector` Terraform module is a no-op until the file exists. After extracting the YAML, append an `Outputs` section if the downloaded template lacks one:
+
+```yaml
+Outputs:
+  KinesisStreamArn:
+    Description: ARN of the Noname Kinesis data stream used for CloudWatch log forwarding
+    Value: !GetAtt NonameDataStream.Arn
+```
 
 You also need the following from your Noname tenant:
 
@@ -100,61 +99,7 @@ You also need the following from your Noname tenant:
 - **Service account client ID and secret** — create one under **Settings → Service Accounts** (used in the Ansible vault)
 - **AWS ECS integration profile** — create one under **Settings → Integrations → Traffic Sources → Add Integration → AWS ECS → Create profile**. The wizard returns a CloudShell deployment script that contains all the values needed by the Sensor: `ENGINE_URL`, `SNIFF_SOURCE_KEY`, `SNIFF_SOURCE_INDEX`, the sensor image URI, and a JSON document with GCP Artifact Registry credentials. Copy these into `terraform/terraform.tfvars` (see Configuration below). The integration profile must exist **before** `terraform apply`, otherwise the Sensor task starts with empty source values and fails.
 
-## Files you need from MuleSoft (Anypoint Flex Gateway)
-
-Flex Gateway runs in **connected mode**, which requires a `registration.yaml` generated from your Anypoint Platform account. This is a one-time step per environment.
-
-```bash
-# Generate registration.yaml (run from the repo root)
-docker run --entrypoint flexctl -u $UID \
-  -v "$(pwd)":/registration \
-  mulesoft/flex-gateway \
-  registration create \
-  --organization=<your-org-id> \
-  --token=<your-connected-app-token> \
-  --output-directory=/registration \
-  --connected=true \
-  <gateway-name>
-```
-
-The org ID and token come from your Anypoint Platform account. After generating `registration.yaml`, store it in AWS Secrets Manager:
-
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id "/${project_name}/mulesoft/registration-yaml" \
-  --secret-string "$(cat registration.yaml)" \
-  --profile SA_Standard_Access-491489166083 \
-  --region us-east-2
-```
-
-The Secrets Manager secret is created by `make apply` (with a placeholder). The above command updates the placeholder with the real value. The ECS task injects the secret as the `FLEX_REGISTRATION_YAML` environment variable, and `docker/mulesoft/entrypoint.sh` writes it to `/etc/mulesoft/flex-gateway/conf.d/registration.yaml` at container startup — this is the path the gateway agent's directory watcher monitors. The base image's actual runtime is `/init` (which sets `FLEX_CONFIG_DIR` and execs `flex-agent`), so the wrapper entrypoint exec's `/init` after writing the file. Because the image runs as a non-root user (uid 65532), the Dockerfile briefly switches to root to `mkdir -p /etc/mulesoft/flex-gateway/conf.d && chown -R 65532:0` it before switching back.
-
 ---
-
-## Anypoint API Manager — Juice Shop proxy API
-
-Once Flex Gateway is registered in connected mode, envoy comes up with **zero listeners** and the gateway returns `502 Bad Gateway` on every request until you deploy a proxy API to it from Anypoint API Manager. Without this step the `/shop/` route does not work, and the `lab-aws-ecs` Sensor source has no Flex Gateway traffic to capture.
-
-This is a one-time, manual step in the Anypoint UI (the lab does not automate it):
-
-1. In Anypoint Platform, switch to the environment where your Flex Gateway is registered.
-2. Open **API Manager** → **Add API** → **Add new API** → **Add proxy**.
-3. Configure the proxy:
-   - **Name**: e.g., `lab-juiceshop-proxy`.
-   - **Implementation URI**: the internal apps ALB on Juice Shop's port. Get it from `cd terraform && terraform output apps_alb_dns` and append `:3000`. Example: `http://internal-yourname-akamai-lab-apps-int-alb-…elb.amazonaws.com:3000`.
-   - **Downstream Port**: `8081` — **must match** the Flex Gateway container's `containerPort`/`hostPort`. A mismatch produces 502s with no other obvious clue.
-   - **Path**: `/shop/`.
-4. Save and deploy to your registered Flex Gateway runtime. Anypoint pushes the configuration to the connected gateway within 30 seconds.
-
-Verify:
-
-```bash
-MULE_ALB=$(cd terraform && terraform output -raw mulesoft_alb_dns)
-curl -s "http://${MULE_ALB}/shop/api/Products" | head -c 120
-# → Juice Shop products JSON
-```
-
-Until the proxy API deploys, this curl returns `<title>502 Bad Gateway</title>` from envoy.
 
 ---
 
@@ -167,6 +112,8 @@ make configure
 ```
 
 It prompts for every required value, auto-detects your public IP, writes `terraform/terraform.tfvars`, and creates and encrypts `ansible/vault.yml` in one step. The sections below describe the manual equivalent if you need to edit individual values after the fact.
+
+**Before running `make configure`**, ensure `integration-files/noname-aws-connector-forwarder.yaml` is present (see "Files you need from Noname/Akamai" above).
 
 ### terraform/terraform.tfvars (manual)
 
@@ -206,7 +153,7 @@ vault_noname_client_id:     "<service account client ID>"
 vault_noname_client_secret: "<service account client secret>"
 ```
 
-All other fields (`vault_anypoint_*`, `vault_kong_admin_token`, etc.) can stay as `REPLACE` placeholders — they are only used for features not yet enabled.
+All other fields (`vault_kong_admin_token`, etc.) can stay as `REPLACE` placeholders — they are only used for features not yet enabled.
 
 ### terraform/terraform.tfvars — Sensor variables
 
@@ -256,7 +203,7 @@ make keys
 make configure
 ```
 
-The interactive wizard prompts for every required value (project name, AWS profile, Noname service account credentials, Anypoint credentials, and optionally the Sensor config from the Noname UI deployment script), auto-detects your public IP for `admin_cidr`, writes `terraform/terraform.tfvars`, and creates and encrypts `ansible/vault.yml` in one step.
+The interactive wizard prompts for every required value (project name, AWS profile, Noname service account credentials, and optionally the Sensor config from the Noname UI deployment script), auto-detects your public IP for `admin_cidr`, writes `terraform/terraform.tfvars`, and creates and encrypts `ansible/vault.yml` in one step.
 
 If you prefer to configure manually, see the [Configuration](#configuration) section below.
 
@@ -272,24 +219,25 @@ This runs `terraform init → apply → ansible-playbook site.yml` in sequence. 
 
 - Creates the VPC, subnets, IGW, NAT GW, security groups
 - Launches the ECS cluster (3× t3.medium EC2 nodes — t3.small is too small once the Sensor lands on every host) and the apps EC2 host
-- Starts Kong, NGINX, and Anypoint Flex Gateway as ECS tasks using public/base images, plus the Noname Sensor as a per-host DaemonSet pulled from the private GCP Artifact Registry
+- Starts Kong and NGINX as ECS tasks using public/base images, plus the Noname Sensor as a per-host DaemonSet pulled from the private GCP Artifact Registry
+- Deploys the Noname Forwarder CloudFormation stack (Kinesis + Lambda) and the AWS API Gateway HTTP API with VPC Link to the apps ALB
 - Installs and starts crAPI, Pixi, VAmPI, DVGA, and Juice Shop on the apps host
-- Registers Kong and NGINX as traffic source integrations in your Noname tenant (the AWS ECS source — `lab-aws-ecs` — was created in the Noname UI before `terraform apply` and is already populated)
+- Registers Kong, NGINX, and the AWS API Gateway connector (`lab-api-gateway`) as Noname traffic source integrations in your Noname tenant
 
-At this point the gateways are running but using vanilla images (no Noname plugin). The Kong and NGINX integrations will show in the Noname UI but appear offline because no plugin traffic is flowing yet. The Sensor (`lab-aws-ecs`) starts reporting as soon as host traffic crosses any cluster NIC.
+At this point Kong and NGINX are running but using vanilla images (no Noname plugin). Kong and NGINX integrations appear offline in the Noname UI until the plugin images are deployed. The `lab-api-gateway` connector starts receiving traffic as soon as requests hit the API Gateway `/shop/` route.
 
 ---
 
 ### Phase 4 — Noname sensor plugins
 
-This phase bakes the Noname Lua plugins into custom Docker images, pushes them to ECR, and wires them into the ECS task definitions. The Kong and NGINX zip files in `integration-files/` must be present (the Mulesoft policy zip is not used — see "Known limitations").
+This phase bakes the Noname Lua plugins into custom Docker images, pushes them to ECR, and wires them into the ECS task definitions. The Kong and NGINX zip files in `integration-files/` must be present.
 
 ```bash
 # Step 1: Build and push plugin images to ECR
 make plugin-images
 ```
 
-This creates ECR repos, builds the Kong, NGINX, and Anypoint Flex Gateway Docker images (Kong and NGINX with Noname plugins installed), pushes all three to ECR, and writes `terraform/plugin.auto.tfvars` with the ECR image URIs and `noname_plugin_enabled = true`. The Kong and NGINX Dockerfiles both patch the Noname plugin's `prevention.lua` with a type guard before the `next()` call — without this fix, a malformed engine response (Lua string instead of rules table) crashes the plugin and returns 500 to the client.
+This creates ECR repos, builds the Kong and NGINX Docker images with Noname plugins installed, pushes them to ECR, and writes `terraform/plugin.auto.tfvars` with the ECR image URIs and `noname_plugin_enabled = true`. Both Dockerfiles patch the Noname plugin's `prevention.lua` with a type guard before the `next()` call — without this fix, a malformed engine response (Lua string instead of rules table) crashes the plugin and returns 500 to the client.
 
 ```bash
 # Step 2: Update ECS task definitions to use the new plugin images
@@ -329,13 +277,13 @@ Runs seven smoke-tests with color-coded `[PASS]` / `[FAIL]` output:
 2. Kong → Pixi route (`/pixi/uuid`)
 3. NGINX → VAmPI users route (`/vampi/users/v1`)
 4. Kong → crAPI route (`/crapi/`)
-5. Flex Gateway → Juice Shop (`/shop/api/Products`) — skipped with a warning if the Anypoint proxy API is not yet deployed
+5. API Gateway → Juice Shop (`/shop/api/Products`)
 6. Kong `nonamesecurity` plugin active
 7. Kong routes present: `crapi-route`, `pixi-route`, `sample-route`
 
 Exits 0 when all checks pass, 1 on any failure.
 
-In the Noname UI, Kong, NGINX, and the AWS ECS Sensor (`lab-aws-ecs`) should all show as **Online** within 1–2 minutes of traffic hitting the gateways.
+In the Noname UI, Kong, NGINX, and `lab-api-gateway` should all show as **Online** within 1–2 minutes of traffic hitting the gateways.
 
 ---
 
@@ -374,7 +322,7 @@ USER_POOL_SIZE=2000 USER_POOL_SEED_PER_INSTANCE_VAMPI=200 USER_POOL_SEED_PER_INS
 | `CrAPIAttacker` | Kong `/crapi/` | API1 BOLA on user/profile and orders, API2 credential stuffing, API3 mass-assignment signup, API5 BFLA on `/workshop/api/management/*`, API7 SSRF via `contact_mechanic.mechanic_api`, API9 inventory probing on `/v1/` |
 | `VAmPIAttacker` | NGINX `/vampi/` | API2 SQL injection on `/users/v1/login`, API1 BOLA on `/users/v1/{username}`, API5 BFLA on `/_debug`, API3 mass-assignment register |
 | `DVGAAttacker` | NGINX `/dvga/` | API8 schema introspection, API4 deeply-nested resolver DoS, API2 batched login mutation stuffing, API3 BOPLA via `createPaste.ownerId`, API1 paste-id walking |
-| `JuiceShopAttacker` | Flex Gateway `/shop/` | API2 `' OR 1=1--` login SQLi, API1 BOLA on `Users/{id}` and `basket/{id}`, API3 role=admin mass assignment on register, API5 BFLA on `/authentication-details`, API7 SSRF via `/profile/image/url`, API8 `/api-docs` recon, API9 path traversal on `/shop/ftp/...`, XSS in feedback comments |
+| `JuiceShopAttacker` | API Gateway `/shop/` | API2 `' OR 1=1--` login SQLi, API1 BOLA on `Users/{id}` and `basket/{id}`, API3 role=admin mass assignment on register, API5 BFLA on `/authentication-details`, API7 SSRF via `/profile/image/url`, API8 `/api-docs` recon, API9 path traversal on `/shop/ftp/...`, XSS in feedback comments |
 | `PixiAttacker` | Kong `/pixi/` | API4 256 KB oversized POST and `/pixi/delay/10` worker tie-up, API8 method bypass (TRACE/OPTIONS/PATCH on `/anything/admin`), header smuggling on `/pixi/headers` |
 
 Coverage spans 9 of the 10 OWASP API Security 2023 categories. **API6** (Unrestricted Access to Sensitive Business Flows) and **API10** (Unsafe Consumption of APIs) are out of scope for this lab.
@@ -390,7 +338,7 @@ make traffic-owasp-ui
 ATTACK_USERS=20 ATTACK_RATE=4 make traffic-owasp
 ```
 
-In the Noname UI, watch the **Issues** / **Runtime** tab on `lab-kong`, `lab-nginx`, and `lab-aws-ecs` while the run progresses — BOLA walks, credential stuffing, and SQL injection are typically the first patterns to surface. Every attack task wraps `catch_response` and accepts the full 200–503 range as success, so locust's stats stay focused on network reachability rather than the HTTP errors the gateway/app correctly returns.
+In the Noname UI, watch the **Issues** / **Runtime** tab on `lab-kong`, `lab-nginx`, and `lab-api-gateway` while the run progresses — BOLA walks, credential stuffing, and SQL injection are typically the first patterns to surface. Every attack task wraps `catch_response` and accepts the full 200–503 range as success, so locust's stats stay focused on network reachability rather than the HTTP errors the gateway/app correctly returns.
 
 ---
 
@@ -404,7 +352,7 @@ All traffic should go through the gateway URLs — not directly to the apps — 
 | Pixi (go-httpbin) | Kong | `/pixi/` | Stateless httpbin API. No auth required. Good for basic request/response exploration. |
 | VAmPI | NGINX | `/vampi/` | Flask REST API with SQLite. OWASP API Top 10 vulnerabilities. Must run `createdb` first. |
 | DVGA | NGINX | `/dvga/` | Flask + Graphene GraphQL API. Endpoint at `/dvga/graphql`. Vulnerable to introspection and injection. |
-| Juice Shop | Flex Gateway | `/shop/` | OWASP Juice Shop. Reached via the Anypoint Flex Gateway proxy API; Sensor (DaemonSet) provides the Noname coverage for this path. |
+| Juice Shop | API Gateway | `/shop/` | OWASP Juice Shop. Reached via AWS API Gateway HTTP API → VPC Link → apps ALB. Coverage provided via CloudWatch → Kinesis → Noname Forwarder Lambda (`lab-api-gateway`). |
 
 ### VAmPI — initialize database
 
@@ -532,22 +480,12 @@ Start from Phase 3 and run through Phase 6 in order. One important difference fr
 
 ```bash
 make deploy            # Phase 3
-make plugin-images     # Phase 4, step 1 — rebuilds ECR repos; pushes Kong, NGINX, and Flex Gateway images
+make plugin-images     # Phase 4, step 1 — rebuilds ECR repos; pushes Kong and NGINX images
 make apply             # Phase 4, step 2
 make provision-plugins # Phase 4, step 3
 make apply             # Phase 4, step 4
 make verify            # Phase 5 — smoke-test all routes
 # Then Phase 6 traffic
-```
-
-After rebuild, also re-store the Flex Gateway `registration.yaml` in Secrets Manager — `make destroy` deletes the secret along with all other resources:
-
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id "/${project_name}/mulesoft/registration-yaml" \
-  --secret-string "$(cat registration.yaml)" \
-  --profile SA_Standard_Access-491489166083 \
-  --region us-east-2
 ```
 
 ---
@@ -562,8 +500,8 @@ aws secretsmanager put-secret-value \
 | `make provision-plugins` fails immediately with "Connection refused" to Noname tenant | Transient network error to Noname SaaS | Re-run the command — almost always a one-off |
 | NGINX returns 500 for `/vampi/` or `/dvga/`, or Kong returns 500 for `/crapi/*` | Unpatched gateway image deployed (Noname plugin `prevention.lua` bug — `bad argument #1 to 'next' (table expected, got string)` in Kong/NGINX logs) | Rebuild and push the patched images: `make plugin-images && make apply` |
 | NGINX returns 502 for `/vampi/*` or `/dvga/*` with `connect() failed (113: No route to host)` in the NGINX logs | Stale apps-ALB IP cached by NGINX after AWS rotated an ALB node | Self-heals within ~10 s thanks to the runtime resolver in `docker/nginx/nginx.conf.template` (variable-based `proxy_pass` + `resolver … valid=10s`). If it persists, the resolver directive or the `set $apps_alb` line was removed — restore them and rebuild the NGINX image. |
-| `/shop/*` returns `502 Bad Gateway` from envoy | Flex Gateway is registered but no proxy API has been deployed to it from Anypoint API Manager | Deploy a proxy API in Anypoint API Manager pointing at the apps ALB on port 3000 with **Downstream Port 8081** — see "Anypoint API Manager — Juice Shop proxy API" |
-| `lab-aws-ecs` source stays in `PENDING` with 0 requests | Sensor task can't fit on an EC2 host (insufficient memory) — usually after a config change pushed memory above the per-host headroom | Check `aws ecs describe-services …noname-sensor`. Either trim a gateway task's memory or scale the ASG up; sensors are a `DAEMON` schedule so one needs to fit on every host. |
+| `/shop/*` returns `403 Forbidden` or `503` from API Gateway | VPC Link not yet healthy or security group rule missing between VPC Link SG and apps ALB SG | Check `aws apigatewayv2 get-vpc-links` for `AVAILABLE` status; verify the `aws_security_group_rule.apps_alb_from_api_gw` rule was applied (`make apply`) |
+| `lab-api-gateway` stays `PENDING` in Noname UI | CloudWatch subscription filter not yet delivering to Kinesis, or KMS permissions missing on the CW→Kinesis IAM role | Verify `aws cloudwatch describe-subscription-filters` for the API GW log group; check IAM role has `kms:GenerateDataKey` on the Kinesis stream's KMS key |
 | `docker: permission denied` | Docker group not active in current shell | Log out and back in, or run `newgrp docker` |
 | `make provision-plugins` runs but Kong still has 0 routes | Ran `make provision-plugins` from wrong directory causing bad terraform output | Run directly from the repo root; the Makefile handles the `cd terraform` internally |
 
@@ -573,7 +511,6 @@ aws secretsmanager put-secret-value \
 
 | Feature | Status |
 |---|---|
-| Mulesoft custom policy on Flex Gateway | Not viable. `noname-security-mulesoft-policy.zip` is packaged as a Mule 4 `mule-policy` and only applies to APIs running on the Mule 4 Runtime. APIs served by Flex Gateway (which is what this lab runs) show "Not covered: there is no policy implementation for the runtime version where this API is running" in API Manager, and `install_mule.pyz` is a dead end against them. Per Noname documentation, Flex Gateway is supported by the **Noname Sensor** instead — that is the path the lab takes, and `lab-aws-ecs` covers Flex Gateway → Juice Shop traffic. |
-| HTTPS / TLS | ALB listeners are HTTP only. Add ACM certificates and HTTPS listeners for TLS-in-transit testing scenarios. |
+| HTTPS / TLS | ALB listeners are HTTP only. Add ACM certificates and HTTPS listeners for TLS-in-transit testing scenarios. API Gateway already serves HTTPS. |
 | Remote Terraform state | State is stored locally. For shared team use, configure an S3 + DynamoDB backend in `terraform/main.tf`. |
-| Cluster headroom | Three `t3.medium` hosts each running a Sensor task plus 1–2 gateway/app tasks is reasonably packed. Bumping any task's memory (Kong, NGINX, Mulesoft, vulnerable apps) will require either a bigger instance type or a placement-strategy change. |
+| Cluster headroom | Three `t3.medium` hosts each running a Sensor task plus 1–2 gateway/app tasks is reasonably packed. Bumping any task's memory (Kong, NGINX, or vulnerable apps) will require either a bigger instance type or a placement-strategy change. |

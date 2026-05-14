@@ -57,10 +57,10 @@ variable "noname_plugin_enabled" {
   default     = false
 }
 
-variable "mule_image" {
-  description = "Flex Gateway wrapper image URI. Set by 'make plugin-images' via plugin.auto.tfvars."
+variable "aws_org_id" {
+  description = "AWS Organization ID. Required by some Noname Forwarder CFN templates; leave empty for single-account deployments if the downloaded template permits it."
   type        = string
-  default     = "mulesoft/flex-gateway:latest"
+  default     = ""
 }
 
 variable "noname_nginx_source_key" {
