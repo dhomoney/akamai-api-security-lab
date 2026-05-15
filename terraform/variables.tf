@@ -75,6 +75,18 @@ variable "noname_nginx_source_index" {
   default     = 0
 }
 
+variable "noname_kong_source_key" {
+  description = "Noname sourceKey for the Kong integration. Written by 'make provision-plugins' to plugin.auto.tfvars."
+  type        = string
+  default     = ""
+}
+
+variable "noname_kong_source_index" {
+  description = "Noname sourceIndex for the Kong integration. Written by 'make provision-plugins' to plugin.auto.tfvars."
+  type        = number
+  default     = 1
+}
+
 # ── Noname AWS ECS sensor (DaemonSet) — values from your Noname tenant's
 # Settings → Integrations → Traffic Sources → AWS ECS deployment script. ──
 

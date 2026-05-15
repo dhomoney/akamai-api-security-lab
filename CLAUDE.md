@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Purpose
 
-Repeatable lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform and configures it via Ansible. Kong OSS and NGINX OSS (OpenResty) run with Noname sensor plugins baked into custom ECR images; AWS API Gateway (HTTP API) proxies JuiceShop via a VPC Link and forwards access logs through a Noname Forwarder CloudFormation stack (Kinesis + Lambda). All three traffic sources — `lab-kong`, `lab-nginx`, `lab-api-gateway` — register with the engine end-to-end.
+Repeatable lab environment for testing and learning Akamai API Security (formerly Noname Security). Provisions AWS infrastructure via Terraform and configures it via Ansible. Kong OSS and NGINX OSS (OpenResty) run with Noname sensor plugins baked into custom ECR images; AWS API Gateway (REST API V1) proxies JuiceShop via an NLB-backed VPC Link and forwards both access logs and execution logs (with data tracing) through a Noname Forwarder CloudFormation stack (Kinesis + Lambda). All three traffic sources — `lab-kong`, `lab-nginx`, `lab-api-gateway` — register with the engine end-to-end.
 
 **Target environment**: AWS us-east-2, single VPC, ECS with EC2 launch type (t3.medium — t3.small is too small once the sensor lands on every host), local Terraform state.
 
@@ -102,7 +102,7 @@ terraform/
     kong/                  # Kong OSS ECS task + ALB
     nginx/                 # NGINX OSS ECS task + ALB
     noname_connector/      # Noname Forwarder CFN stack (Kinesis + Lambda); uploads template to S3; exposes kinesis_stream_arn
-    aws_api_gateway/       # HTTP API (V2) + VPC Link to apps ALB; CloudWatch log group; CW→Kinesis subscription filter
+    aws_api_gateway/       # REST API (V1) + NLB-backed VPC Link; access + execution log groups; CW→Kinesis subscription filters (both groups)
     noname/                # Noname Sensor DaemonSet (host-network ECS task per cluster instance) + GCP Artifact Registry creds in Secrets Manager
 
 ansible/
@@ -146,7 +146,7 @@ scripts/
 ### Network flow
 Internet → ALB or API Gateway (public) → ECS EC2 nodes or VPC Link (private subnets) → containers
 
-Kong and NGINX each have their own public ALB. JuiceShop is reached via AWS API Gateway (HTTP API, `$default` stage) → VPC Link → apps internal ALB on port 3000. The Noname Sensor runs as a DaemonSet on the ECS EC2 nodes (`network_mode = "host"`, `pid_mode = "host"`) and reports outbound to the Noname engine. API Gateway access logs flow to CloudWatch → Kinesis stream (Noname Forwarder stack) → Noname engine.
+Kong and NGINX each have their own public ALB. JuiceShop is reached via AWS API Gateway (REST API V1, `lab` stage) → VPC Link → internal NLB → apps EC2 instance on port 3000. The Noname Sensor runs as a DaemonSet on the ECS EC2 nodes (`network_mode = "host"`, `pid_mode = "host"`) and reports outbound to the Noname engine. API Gateway access logs AND execution logs (with data tracing) flow to CloudWatch → Kinesis stream (Noname Forwarder stack) → Noname engine.
 
 ### ECS approach
 EC2 launch type (not Fargate) so that Ansible can SSH into the underlying nodes for configuration. Nodes run Amazon Linux 2023 ECS-optimized AMI. The `ecs_cluster` module manages the ASG and ECS capacity provider; individual gateway modules deploy task definitions and services on top of that shared cluster.
@@ -183,12 +183,15 @@ The Noname Sensor runs as an ECS DaemonSet — one container per cluster EC2 ins
 - **Provisioning order**: create the engine and the **AWS ECS** integration profile in the Noname UI (Settings → Integrations → Traffic Sources → Add Integration → AWS ECS) **before** running `terraform apply`. The "Create profile" step yields a CloudShell script with all values (`ENGINE_URL`, `SNIFF_SOURCE_KEY`, `SNIFF_SOURCE_INDEX`, image URI, JFrog JSON) baked in — copy them into `terraform.tfvars`. Without these set, the sensor task starts with empty source values and fails.
 
 ### AWS API Gateway (JuiceShop)
-JuiceShop traffic flows through an AWS API Gateway HTTP API (V2). The module is in `terraform/modules/aws_api_gateway/`.
+JuiceShop traffic flows through an AWS API Gateway REST API (V1). The module is in `terraform/modules/aws_api_gateway/`. **HTTP API (V2) is NOT supported by the Noname Manual/Forwarder connector** — only REST API V1 produces execution logs with data tracing, which the Forwarder Lambda requires to form complete packet pairs.
 
-- **VPC Link**: a `aws_apigatewayv2_vpc_link` with a dedicated security group connects the HTTP API to the private apps internal ALB on port 3000. A security group rule on the apps ALB allows ingress from the VPC Link SG.
-- **Route**: `ANY /shop/{proxy+}` → `HTTP_PROXY` integration to the JuiceShop ALB listener ARN. The integration uses `"overwrite:path" = "/$request.path.proxy"` to strip the `/shop/` prefix before forwarding.
-- **Stage**: `$default` with `auto_deploy = true`. Access logs go to `/aws/apigateway/${project_name}` (7-day retention) in the Noname `[NONAME]…[NONAME]` format required by the Forwarder Lambda.
-- **CloudWatch → Kinesis subscription filter**: routes the log group to the Kinesis stream created by the Noname Forwarder CFN stack. The IAM role for CloudWatch Logs needs both `kinesis:PutRecord` on the stream ARN **and** `kms:GenerateDataKey` + `kms:Decrypt` on the stream's KMS key (the Noname Forwarder stack encrypts the stream by default). The `aws_kinesis_stream` data source is used to look up the key ARN from the stream name.
+- **NLB**: an internal Network Load Balancer in private subnets, with an IP target group pointing at the apps EC2 instance on port 3000. REST API V1 VPC Links require an NLB (not an ALB). Port 3000 ingress from the VPC CIDR is added to the apps instance SG to allow NLB passthrough traffic.
+- **VPC Link**: `aws_api_gateway_vpc_link` targeting the NLB ARN.
+- **Route**: `ANY /shop/{proxy+}` → `HTTP_PROXY` integration via VPC Link to `http://{nlb_dns}/{proxy}`. The `integration.request.path.proxy = method.request.path.proxy` parameter strips the `/shop/` prefix before forwarding to JuiceShop.
+- **Stage**: `lab`. Access logs go to `/aws/apigateway/${project_name}` (7-day retention) in the Noname `[NONAME]…[NONAME]` format. Execution logging (level=INFO) and data tracing are enabled via `aws_api_gateway_method_settings` (`method_path = "*/*"`) — this produces the second log stream the Forwarder Lambda needs.
+- **Execution log group**: pre-created in Terraform as `API-Gateway-Execution-Logs_{rest_api_id}/lab` so retention and subscription can be managed. AWS writes execution logs to this auto-named group when logging is enabled.
+- **CloudWatch → Kinesis**: TWO `aws_cloudwatch_log_subscription_filter` resources — one for the access log group, one for the execution log group. Both route to the Kinesis stream from the Noname Forwarder CFN stack. The Forwarder Lambda pairs them by `requestId` via DynamoDB to form complete API transactions (`isComplete: True`). IAM role needs `kinesis:PutRecord` + `kms:GenerateDataKey` + `kms:Decrypt` (Forwarder stack encrypts the stream by default).
+- **Account-level IAM**: `aws_api_gateway_account` sets the CloudWatch logs delivery role (account-level singleton; safe to have in one Terraform state per account).
 - **Noname Forwarder stack** (`terraform/modules/noname_connector/`): uploads the CFN template to S3 (the 67 KB template exceeds the 51,200-byte CloudFormation inline body limit) and deploys it as `${project_name}-noname-connector`. The Outputs section must include `KinesisStreamArn` (appended to the template after download — the Noname-provided template has no Outputs). Capabilities: `CAPABILITY_IAM`, `CAPABILITY_NAMED_IAM`, `CAPABILITY_AUTO_EXPAND` (required for SAM transforms). Parameter: `OrganizationId` from AWS Organizations.
 - **Pre-deploy step**: download the Forwarder CFN template from the Noname UI (Settings → Integrations → Traffic Sources → Add Integration → AWS Connector → Manual → download ZIP), extract the YAML, and place it at `integration-files/noname-aws-connector-forwarder.yaml`. The module is a no-op until the file exists. After placing it, append the Outputs section if the downloaded template lacks one.
 

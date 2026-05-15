@@ -1,6 +1,7 @@
 output "apps_alb_dns" { value = aws_lb.apps.dns_name }
 output "apps_instance_ip" { value = aws_instance.apps.private_ip }
 output "apps_alb_sg_id" { value = aws_security_group.apps_alb.id }
+output "apps_instance_sg_id" { value = aws_security_group.apps_instance.id }
 
 output "app_urls" {
   description = "Internal URLs for each vulnerable app (accessible from gateways only)"

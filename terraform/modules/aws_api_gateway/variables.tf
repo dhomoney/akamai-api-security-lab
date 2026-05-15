@@ -6,18 +6,24 @@ variable "vpc_id" {
   type = string
 }
 
+variable "vpc_cidr" {
+  description = "VPC CIDR block — used for NLB→apps instance SG ingress rule"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
 variable "private_subnet_ids" {
-  description = "Private subnets for the VPC Link ENIs"
+  description = "Private subnets for the internal NLB"
   type        = list(string)
 }
 
-variable "juiceshop_alb_listener_arn" {
-  description = "ARN of the apps internal ALB listener on port 3000 (JuiceShop)"
+variable "apps_instance_ip" {
+  description = "Private IP of the apps EC2 instance — registered as NLB IP target for JuiceShop on port 3000"
   type        = string
 }
 
-variable "apps_alb_sg_id" {
-  description = "Security group ID of the apps internal ALB — receives an ingress rule from the VPC Link SG"
+variable "apps_instance_sg_id" {
+  description = "Security group ID of the apps EC2 instance — receives port-3000 ingress rule for NLB passthrough"
   type        = string
 }
 

@@ -120,6 +120,18 @@
             regexp: '^noname_nginx_source_index'
             line: 'noname_nginx_source_index = {{ noname_nginx_source.sourceIndex | int }}'
 
+        - name: Write Kong source key to plugin.auto.tfvars
+          ansible.builtin.lineinfile:
+            path: "{{ playbook_dir }}/../terraform/plugin.auto.tfvars"
+            regexp: '^noname_kong_source_key'
+            line: 'noname_kong_source_key    = "{{ noname_kong_source.sourceKey }}"'
+
+        - name: Write Kong source index to plugin.auto.tfvars
+          ansible.builtin.lineinfile:
+            path: "{{ playbook_dir }}/../terraform/plugin.auto.tfvars"
+            regexp: '^noname_kong_source_index'
+            line: 'noname_kong_source_index  = {{ noname_kong_source.sourceIndex | int }}'
+
         - name: Verify NGINX is reachable and serving health endpoint
           ansible.builtin.uri:
             url: "http://{{ nginx_alb_dns }}/health"
@@ -135,5 +147,6 @@
             msg:
               - "Kong: nonamesecurity plugin active (sourceKey={{ noname_kong_source.sourceKey }}, index={{ noname_kong_source.sourceIndex }})"
               - "NGINX: health check passed at http://{{ nginx_alb_dns }}/health"
-              - "NGINX source key written to plugin.auto.tfvars — run 'make apply' to update ECS task env."
+              - "Kong + NGINX source keys written to plugin.auto.tfvars — run 'make apply' to bake into ECS task defs and restart containers."
               - "NGINX: sourceKey={{ noname_nginx_source.sourceKey }}, index={{ noname_nginx_source.sourceIndex }}"
+              - "Kong: sourceKey={{ noname_kong_source.sourceKey }}, index={{ noname_kong_source.sourceIndex }}"

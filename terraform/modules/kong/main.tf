@@ -1,3 +1,16 @@
+locals {
+  kong_declarative_config = (var.noname_plugin_enabled && var.noname_source_key != "") ? join("\n", [
+    "_format_version: \"3.0\"",
+    "plugins:",
+    "  - name: nonamesecurity",
+    "    config:",
+    "      NN_ENGINE_URL: \"${var.noname_engine_url}?structure=base64-payload\"",
+    "      NN_SOURCE_KEY: \"${var.noname_source_key}\"",
+    "      NN_SOURCE_INDEX: ${var.noname_source_index}",
+    "      NN_SOURCE_TYPE: 7",
+  ]) : "_format_version: \"3.0\""
+}
+
 resource "aws_lb" "kong" {
   name               = "${var.project_name}-kong-alb"
   internal           = false
@@ -117,7 +130,7 @@ resource "aws_ecs_task_definition" "kong" {
       environment = concat(
         [
           { name = "KONG_DATABASE", value = "off" },
-          { name = "KONG_DECLARATIVE_CONFIG_STRING", value = "_format_version: \"3.0\"\n" },
+          { name = "KONG_DECLARATIVE_CONFIG_STRING", value = local.kong_declarative_config },
           { name = "KONG_PROXY_LISTEN", value = "0.0.0.0:8000, 0.0.0.0:8443 ssl" },
           { name = "KONG_ADMIN_LISTEN", value = "0.0.0.0:8001" },
           { name = "KONG_LOG_LEVEL", value = "info" }

@@ -89,6 +89,9 @@ module "kong" {
   capacity_provider     = module.ecs_cluster.capacity_provider_name
   kong_image            = var.kong_image
   noname_plugin_enabled = var.noname_plugin_enabled
+  noname_engine_url     = var.noname_engine_url
+  noname_source_key     = var.noname_kong_source_key
+  noname_source_index   = var.noname_kong_source_index
   tags                  = local.common_tags
 }
 
@@ -120,13 +123,14 @@ module "noname_connector" {
 module "aws_api_gateway" {
   source = "./modules/aws_api_gateway"
 
-  project_name               = var.project_name
-  vpc_id                     = module.vpc.vpc_id
-  private_subnet_ids         = module.vpc.private_subnet_ids
-  juiceshop_alb_listener_arn = module.vulnerable_apps.app_listener_arns["juiceshop"]
-  apps_alb_sg_id             = module.vulnerable_apps.apps_alb_sg_id
-  kinesis_stream_arn         = module.noname_connector.kinesis_stream_arn
-  tags                       = local.common_tags
+  project_name        = var.project_name
+  vpc_id              = module.vpc.vpc_id
+  vpc_cidr            = var.vpc_cidr
+  private_subnet_ids  = module.vpc.private_subnet_ids
+  apps_instance_ip    = module.vulnerable_apps.apps_instance_ip
+  apps_instance_sg_id = module.vulnerable_apps.apps_instance_sg_id
+  kinesis_stream_arn  = module.noname_connector.kinesis_stream_arn
+  tags                = local.common_tags
 }
 
 module "vulnerable_apps" {

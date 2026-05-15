@@ -12,6 +12,21 @@ variable "noname_plugin_enabled" {
   type    = bool
   default = false
 }
+variable "noname_engine_url" {
+  description = "Noname engine URL for the Kong plugin declarative config"
+  type        = string
+  default     = ""
+}
+variable "noname_source_key" {
+  description = "Noname sourceKey for the lab-kong traffic source"
+  type        = string
+  default     = ""
+}
+variable "noname_source_index" {
+  description = "Noname sourceIndex for the lab-kong traffic source"
+  type        = number
+  default     = 1
+}
 variable "tags" {
   type    = map(string)
   default = {}
