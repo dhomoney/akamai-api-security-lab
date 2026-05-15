@@ -164,6 +164,15 @@ module "noname" {
   tags = local.common_tags
 }
 
+module "traffic_generator" {
+  source = "./modules/traffic_generator"
+
+  project_name  = var.project_name
+  aws_region    = var.aws_region
+  traffic_image = var.traffic_image
+  tags          = local.common_tags
+}
+
 locals {
   common_tags = {
     Project     = var.project_name

@@ -76,6 +76,15 @@ make traffic-owasp       # headless attack run across all 5 apps
 make traffic-owasp-ui    # Locust web UI for the attack file
 ATTACK_USERS=20 ATTACK_RATE=4 make traffic-owasp  # tune rate (defaults 10/2)
 
+# AWS Fargate traffic (platform-independent; works on Windows without WSL; genuine IP diversity)
+make apply-ecr           # create ECR repos first (if not already done)
+make traffic-aws-build   # build+push Locust image to ECR; write traffic.auto.tfvars; update Fargate task def
+make traffic-aws         # launch TRAFFIC_AWS_TASKS (default 10) Fargate tasks for baseline traffic
+make traffic-aws-logs    # tail CloudWatch logs from running Fargate tasks (Ctrl+C to stop)
+make traffic-aws-stop    # stop all running Fargate traffic tasks
+make traffic-owasp-aws   # launch ATTACK_AWS_TASKS (default 5) Fargate tasks for OWASP attacks
+TRAFFIC_AWS_TASKS=20 TRAFFIC_AWS_USERS=10 make traffic-aws   # tune task count and users per task
+
 # Noname sensor plugin installation (run once per lab, requires Docker + integration-files/*.zip)
 make deploy-plugins      # full flow: ECR → build images → apply → provision → plugin config
 # Or step by step:
@@ -104,6 +113,7 @@ terraform/
     noname_connector/      # Noname Forwarder CFN stack (Kinesis + Lambda); uploads template to S3; exposes kinesis_stream_arn
     aws_api_gateway/       # REST API (V1) + NLB-backed VPC Link; access + execution log groups; CW→Kinesis subscription filters (both groups)
     noname/                # Noname Sensor DaemonSet (host-network ECS task per cluster instance) + GCP Artifact Registry creds in Secrets Manager
+    traffic_generator/     # Fargate task definition for Locust; IAM exec role + CloudWatch log group; no ECS service (tasks launched ad-hoc via 'make traffic-aws')
 
 ansible/
   site.yml                 # Master playbook — runs all roles in order
@@ -124,6 +134,7 @@ docker/
   nginx/Dockerfile         # FROM openresty/openresty:bullseye + Noname Lua scripts; patches prevention.lua
   nginx/nginx.conf.template # nginx config with Noname Lua hooks; ${APPS_ALB_DNS} substituted at startup; resolver-based runtime DNS (variable proxy_pass + per-location rewrite, no upstream{} blocks) so ALB IP rotation does not cause 502s
   nginx/entrypoint.sh      # Runs envsubst, patches NN_SOURCE_KEY/NN_SOURCE_INDEX, starts OpenResty
+  traffic/Dockerfile       # FROM python:3.12-slim + Locust; copies locustfile.py + attackfile.py; ENTRYPOINT python -m locust; CMD overridden at task launch via ECS container override
 
 integration-files/         # Drop Noname-provided files here (gitignored)
   noname-security-kong-policy.zip
@@ -202,6 +213,15 @@ JuiceShop traffic flows through an AWS API Gateway REST API (V1). The module is 
 
 ### Traffic generation — two-phase workflow
 Baseline and attack traffic are deliberately separate locustfiles. Run them as distinct phases of a demo, not concurrently — mixing them poisons the behavioural baseline.
+
+**AWS Fargate execution mode.** `make traffic-aws` and `make traffic-owasp-aws` run Locust inside Docker on ECS Fargate instead of locally, making traffic generation platform-independent (no local Python/venv; works on Windows without WSL) and enabling it to run unattended. The flow:
+1. `make apply-ecr` — creates the traffic ECR repo (part of the ECR module, run once before first build)
+2. `make traffic-aws-build` — builds `docker/traffic/Dockerfile`, pushes to ECR, writes `terraform/traffic.auto.tfvars` with the ECR URI, runs `terraform apply -target module.traffic_generator` to update the Fargate task definition
+3. `make traffic-aws` — launches `TRAFFIC_AWS_TASKS` (default 10) independent Fargate tasks via `aws ecs run-task`, each running `TRAFFIC_AWS_USERS` (default 5) Locust users; total traffic = tasks × users
+4. `make traffic-aws-logs` — tails `/ecs/<project>/traffic` CloudWatch log group
+5. `make traffic-aws-stop` — stops all tasks in the `<project>-traffic` family
+
+Each Fargate task gets its own ENI with a unique private IP. The Kong and NGINX ALBs are internet-facing but accessible from within the VPC; Fargate tasks in private subnets reach them via NAT. The XFF injection (`N_CONSUMER_IPS=10` default) still applies — each Locust user instance within a task picks a distinct fake source IP from `10.20.x.y`, so Noname sees diverse consumer IPs even when multiple tasks share the same NAT gateway egress IP. The task definition is in `terraform/modules/traffic_generator/` (512 CPU / 1024 MiB, Fargate, `awsvpc` networking, 3-day log retention). No ECS service is created — tasks are ephemeral, launched on demand.
 
 1. **Baseline (`scripts/traffic/locustfile.py`)** — `make traffic` exercises the five vulnerable apps with realistic happy-path requests so the Noname engine can learn normal patterns per source. Let it run ~30 minutes for the first build before declaring the baseline trained.
 2. **Attacks (`scripts/traffic/attackfile.py`)** — `make traffic-owasp` then fires OWASP API Top 10 (2023) attacks against the same gateways. Noname flags these as anomalies against the trained baseline and surfaces them in the Runtime tab as detection events.

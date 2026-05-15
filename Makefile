@@ -21,6 +21,12 @@ TRAFFIC_RATE     ?= 5
 ATTACK_USERS     ?= 10
 ATTACK_RATE      ?= 2
 N_CONSUMER_IPS   ?= 10
+TRAFFIC_AWS_TASKS   ?= 10
+TRAFFIC_AWS_USERS   ?= 5
+TRAFFIC_AWS_RATE    ?= 1
+ATTACK_AWS_TASKS    ?= 5
+ATTACK_AWS_USERS    ?= 2
+ATTACK_AWS_RATE     ?= 1
 
 .DEFAULT_GOAL := help
 .PHONY: help setup install-terraform keys configure init plan apply provision provision-check deploy \
@@ -28,7 +34,9 @@ N_CONSUMER_IPS   ?= 10
         _tf_outputs _ssh_cfg _my_ip \
         traffic-install traffic traffic-ui traffic-owasp traffic-owasp-ui \
         _aws_account apply-ecr ecr-login build-plugin-images push-plugin-images plugin-images \
-        provision-plugins deploy-plugins
+        provision-plugins deploy-plugins \
+        traffic-aws-build traffic-aws traffic-aws-stop traffic-aws-logs \
+        traffic-owasp-aws traffic-owasp-aws-stop
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -87,13 +95,16 @@ destroy: _my_ip ## Tear down all infrastructure (DESTRUCTIVE)
 # ── Ansible ────────────────────────────────────────────────────────────────────
 
 _tf_outputs:
-	$(eval BASTION_IP      := $(shell cd $(TF_DIR) && terraform output -raw bastion_public_ip 2>/dev/null))
-	$(eval APPS_ALB_DNS    := $(shell cd $(TF_DIR) && terraform output -raw apps_alb_dns 2>/dev/null))
-	$(eval KONG_ADMIN_URL  := $(shell cd $(TF_DIR) && terraform output -raw kong_admin_url 2>/dev/null))
-	$(eval NGINX_ALB_DNS   := $(shell cd $(TF_DIR) && terraform output -raw nginx_alb_dns 2>/dev/null))
-	$(eval KONG_ALB_DNS    := $(shell cd $(TF_DIR) && terraform output -raw kong_alb_dns 2>/dev/null))
-	$(eval ECS_CLUSTER       := $(shell cd $(TF_DIR) && terraform output -raw ecs_cluster_name 2>/dev/null))
-	$(eval API_GW_URL        := $(shell cd $(TF_DIR) && terraform output -raw api_gateway_url 2>/dev/null))
+	$(eval BASTION_IP           := $(shell cd $(TF_DIR) && terraform output -raw bastion_public_ip 2>/dev/null))
+	$(eval APPS_ALB_DNS         := $(shell cd $(TF_DIR) && terraform output -raw apps_alb_dns 2>/dev/null))
+	$(eval KONG_ADMIN_URL       := $(shell cd $(TF_DIR) && terraform output -raw kong_admin_url 2>/dev/null))
+	$(eval NGINX_ALB_DNS        := $(shell cd $(TF_DIR) && terraform output -raw nginx_alb_dns 2>/dev/null))
+	$(eval KONG_ALB_DNS         := $(shell cd $(TF_DIR) && terraform output -raw kong_alb_dns 2>/dev/null))
+	$(eval ECS_CLUSTER          := $(shell cd $(TF_DIR) && terraform output -raw ecs_cluster_name 2>/dev/null))
+	$(eval API_GW_URL           := $(shell cd $(TF_DIR) && terraform output -raw api_gateway_url 2>/dev/null))
+	$(eval TRAFFIC_TASK_DEF_ARN := $(shell cd $(TF_DIR) && terraform output -raw traffic_task_def_arn 2>/dev/null))
+	$(eval PRIVATE_SUBNETS_CSV  := $(shell cd $(TF_DIR) && terraform output -raw private_subnet_ids_csv 2>/dev/null))
+	$(eval ECS_SG_ID            := $(shell cd $(TF_DIR) && terraform output -raw ecs_sg_id 2>/dev/null))
 	@if [ -z "$(BASTION_IP)" ]; then \
 		echo "ERROR: Could not read Terraform outputs. Run 'make apply' first."; exit 1; fi
 
@@ -264,3 +275,75 @@ traffic-owasp-ui: _tf_outputs ## Launch Locust web UI for the OWASP attack file 
 	N_CONSUMER_IPS=$(N_CONSUMER_IPS) KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/attackfile.py
+
+# ── AWS Fargate traffic (platform-independent, genuine IP diversity) ───────────
+
+traffic-aws-build: _my_ip _aws_account ## Build+push traffic image to ECR; creates Fargate task definition (run once, requires 'make apply-ecr' first)
+	docker build -f docker/traffic/Dockerfile -t $(PROJECT_NAME)/traffic:latest .
+	$(eval TRAFFIC_ECR := $(shell cd $(TF_DIR) && terraform output -raw traffic_ecr_uri 2>/dev/null))
+	@[ -n "$(TRAFFIC_ECR)" ] || (echo "ERROR: traffic_ecr_uri not found. Run 'make apply-ecr' first."; exit 1)
+	aws ecr get-login-password --region $(AWS_REGION) --profile $(AWS_PROFILE) | \
+	  docker login --username AWS --password-stdin $(AWS_ACCOUNT).dkr.ecr.$(AWS_REGION).amazonaws.com
+	docker tag $(PROJECT_NAME)/traffic:latest $(TRAFFIC_ECR):latest
+	docker push $(TRAFFIC_ECR):latest
+	@printf 'traffic_image = "%s:latest"\n' "$(TRAFFIC_ECR)" > $(TF_DIR)/traffic.auto.tfvars
+	cd $(TF_DIR) && terraform apply -target module.traffic_generator \
+	  -var-file="terraform.tfvars" -var "admin_cidr=$(MY_IP)/32" -auto-approve
+	@echo "Wrote $(TF_DIR)/traffic.auto.tfvars — Fargate task definition updated."
+
+traffic-aws: _tf_outputs ## Run baseline traffic on ECS Fargate (TRAFFIC_AWS_TASKS tasks × TRAFFIC_AWS_USERS users each)
+	@[ -n "$(TRAFFIC_TASK_DEF_ARN)" ] || (echo "ERROR: Run 'make traffic-aws-build' first."; exit 1)
+	@printf '{"containerOverrides":[{"name":"locust","command":["--locustfile","/app/locustfile.py","--users","%s","--spawn-rate","%s","--headless","--exit-code-on-error","0"],"environment":[{"name":"KONG_ALB_DNS","value":"%s"},{"name":"NGINX_ALB_DNS","value":"%s"},{"name":"API_GW_URL","value":"%s"},{"name":"N_CONSUMER_IPS","value":"%s"}]}]}' \
+	  "$(TRAFFIC_AWS_USERS)" "$(TRAFFIC_AWS_RATE)" "$(KONG_ALB_DNS)" "$(NGINX_ALB_DNS)" "$(API_GW_URL)" "$(N_CONSUMER_IPS)" \
+	  > /tmp/traffic_overrides.json
+	@echo "Launching $(TRAFFIC_AWS_TASKS) Fargate tasks ($(TRAFFIC_AWS_USERS) users each)..."
+	@for i in $$(seq 1 $(TRAFFIC_AWS_TASKS)); do \
+	  aws ecs run-task \
+	    --cluster $(ECS_CLUSTER) \
+	    --task-definition $(TRAFFIC_TASK_DEF_ARN) \
+	    --launch-type FARGATE \
+	    --count 1 \
+	    --network-configuration "awsvpcConfiguration={subnets=[$(PRIVATE_SUBNETS_CSV)],securityGroups=[$(ECS_SG_ID)],assignPublicIp=DISABLED}" \
+	    --overrides file:///tmp/traffic_overrides.json \
+	    --profile $(AWS_PROFILE) --region $(AWS_REGION) \
+	    --output text --query 'tasks[0].taskArn'; \
+	done
+	@echo "Started. Run 'make traffic-aws-logs' to watch or 'make traffic-aws-stop' to halt."
+
+traffic-aws-stop: _tf_outputs ## Stop all running Fargate traffic generator tasks
+	$(eval RUNNING_TASKS := $(shell aws ecs list-tasks --cluster $(ECS_CLUSTER) \
+	  --family $(PROJECT_NAME)-traffic --desired-status RUNNING \
+	  --profile $(AWS_PROFILE) --region $(AWS_REGION) \
+	  --output text --query 'taskArns' 2>/dev/null))
+	@if [ -z "$(RUNNING_TASKS)" ]; then echo "No running traffic tasks."; exit 0; fi
+	@for TASK in $(RUNNING_TASKS); do \
+	  aws ecs stop-task --cluster $(ECS_CLUSTER) --task $$TASK \
+	    --profile $(AWS_PROFILE) --region $(AWS_REGION) \
+	    --output text --query 'task.taskArn'; \
+	done
+	@echo "Stopped all running traffic tasks."
+
+traffic-aws-logs: ## Tail CloudWatch logs from Fargate traffic tasks (Ctrl+C to stop)
+	aws logs tail /ecs/$(PROJECT_NAME)/traffic --follow \
+	  --profile $(AWS_PROFILE) --region $(AWS_REGION)
+
+traffic-owasp-aws: _tf_outputs ## Run OWASP attacks on ECS Fargate (ATTACK_AWS_TASKS tasks × ATTACK_AWS_USERS users each)
+	@[ -n "$(TRAFFIC_TASK_DEF_ARN)" ] || (echo "ERROR: Run 'make traffic-aws-build' first."; exit 1)
+	@printf '{"containerOverrides":[{"name":"locust","command":["--locustfile","/app/attackfile.py","--users","%s","--spawn-rate","%s","--headless","--exit-code-on-error","0"],"environment":[{"name":"KONG_ALB_DNS","value":"%s"},{"name":"NGINX_ALB_DNS","value":"%s"},{"name":"API_GW_URL","value":"%s"},{"name":"N_CONSUMER_IPS","value":"%s"}]}]}' \
+	  "$(ATTACK_AWS_USERS)" "$(ATTACK_AWS_RATE)" "$(KONG_ALB_DNS)" "$(NGINX_ALB_DNS)" "$(API_GW_URL)" "$(N_CONSUMER_IPS)" \
+	  > /tmp/traffic_overrides.json
+	@echo "Launching $(ATTACK_AWS_TASKS) Fargate attack tasks ($(ATTACK_AWS_USERS) users each)..."
+	@for i in $$(seq 1 $(ATTACK_AWS_TASKS)); do \
+	  aws ecs run-task \
+	    --cluster $(ECS_CLUSTER) \
+	    --task-definition $(TRAFFIC_TASK_DEF_ARN) \
+	    --launch-type FARGATE \
+	    --count 1 \
+	    --network-configuration "awsvpcConfiguration={subnets=[$(PRIVATE_SUBNETS_CSV)],securityGroups=[$(ECS_SG_ID)],assignPublicIp=DISABLED}" \
+	    --overrides file:///tmp/traffic_overrides.json \
+	    --profile $(AWS_PROFILE) --region $(AWS_REGION) \
+	    --output text --query 'tasks[0].taskArn'; \
+	done
+	@echo "Started. Run 'make traffic-aws-logs' to watch or 'make traffic-aws-stop' to halt."
+
+traffic-owasp-aws-stop: traffic-aws-stop ## Alias for traffic-aws-stop (stops all traffic family tasks)

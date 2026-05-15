@@ -51,6 +51,12 @@ variable "nginx_image" {
   default     = "openresty/openresty:bullseye"
 }
 
+variable "traffic_image" {
+  description = "Locust traffic generator image URI. Defaults to public image; set to ECR URI after 'make traffic-aws-build'."
+  type        = string
+  default     = "locustio/locust:latest"
+}
+
 variable "noname_plugin_enabled" {
   description = "When true, adds KONG_PLUGINS=bundled,nonamesecurity to the Kong task definition."
   type        = bool

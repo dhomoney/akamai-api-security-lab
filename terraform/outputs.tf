@@ -57,3 +57,23 @@ output "nginx_ecr_uri" {
   description = "ECR repository URI for the NGINX/OpenResty plugin image"
   value       = module.ecr.nginx_uri
 }
+
+output "traffic_ecr_uri" {
+  description = "ECR repository URI for the Locust traffic generator image"
+  value       = module.ecr.traffic_uri
+}
+
+output "traffic_task_def_arn" {
+  description = "ARN of the Locust Fargate task definition"
+  value       = module.traffic_generator.task_definition_arn
+}
+
+output "private_subnet_ids_csv" {
+  description = "Private subnet IDs as comma-separated string (for aws ecs run-task)"
+  value       = join(",", module.vpc.private_subnet_ids)
+}
+
+output "ecs_sg_id" {
+  description = "ECS cluster security group ID"
+  value       = module.security_groups.ecs_sg_id
+}

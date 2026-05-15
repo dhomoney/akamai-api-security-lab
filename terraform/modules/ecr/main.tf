@@ -19,3 +19,14 @@ resource "aws_ecr_repository" "nginx" {
 
   tags = merge(var.tags, { Name = "${var.project_name}-nginx-ecr" })
 }
+
+resource "aws_ecr_repository" "traffic" {
+  name                 = "${var.project_name}/traffic"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = false
+  }
+
+  tags = merge(var.tags, { Name = "${var.project_name}-traffic-ecr" })
+}
