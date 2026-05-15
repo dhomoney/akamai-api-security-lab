@@ -13,13 +13,16 @@ Internet → ALB (public subnets)
               ├── Kong OSS ALB        port 8000 (proxy), 8001 (admin)
               └── NGINX/OpenResty ALB port 80
 
-Internet → AWS API Gateway (HTTP API, $default stage)
-              └── VPC Link → apps internal ALB :3000 (Juice Shop)
+Internet → AWS API Gateway (REST API V1, `lab` stage)
+              └── VPC Link → internal NLB → apps EC2 :3000 (Juice Shop)
 
            ECS EC2 cluster (private subnets, t3.medium)
               ├── Kong OSS container        ← nonamesecurity plugin baked in  (lab-kong)
               ├── NGINX/OpenResty container ← Noname Lua plugin baked in      (lab-nginx)
               └── Noname Sensor (DaemonSet) ← one per host, host-network NIC sniff
+
+           ECS Fargate (private subnets, ephemeral)
+              └── Locust traffic tasks      ← launched ad-hoc via 'make traffic-aws'
 
            Apps host EC2 (private subnet)
               ├── crAPI       :8080   OWASP crAPI vulnerable app
@@ -29,7 +32,7 @@ Internet → AWS API Gateway (HTTP API, $default stage)
               └── Juice Shop  :3000   OWASP Juice Shop (behind API Gateway proxy)
 
            Noname Forwarder stack (CloudFormation)
-              └── Kinesis stream ← CloudWatch subscription filter ← API Gateway access logs
+              └── Kinesis stream ← CloudWatch subscription filter ← API GW access + execution logs
                       └── Sender Lambda → Noname engine            (lab-api-gateway)
 ```
 
@@ -44,7 +47,7 @@ Internet → AWS API Gateway (HTTP API, $default stage)
 | NGINX | `/dvga/` | apps:5013 |
 | API Gateway | `/shop/{proxy+}` | apps:3000 (Juice Shop) |
 
-The Kong Admin API (port 8001) is restricted to `admin_cidr` in the security group. API Gateway access logs flow to CloudWatch, then through a Kinesis subscription filter to the Noname Forwarder Lambda, giving the engine visibility into JuiceShop traffic as the `lab-api-gateway` connector.
+The Kong Admin API (port 8001) is restricted to `admin_cidr` in the security group. API Gateway **access logs** and **execution logs** (data tracing enabled) both flow to CloudWatch, then through Kinesis subscription filters to the Noname Forwarder Lambda — the Forwarder pairs them by `requestId` via DynamoDB to form complete API transactions for the `lab-api-gateway` connector. Only REST API V1 produces execution logs; HTTP API V2 is not supported by the Forwarder.
 
 NGINX resolves the apps-ALB hostname at request time (10-second answer cache via the in-config `resolver` directive plus a variable-based `proxy_pass`), so AWS rotating ALB node IPs does not cause sticky 502s.
 
@@ -291,31 +294,80 @@ In the Noname UI, Kong, NGINX, and `lab-api-gateway` should all show as **Online
 
 Two separate Locust files drive traffic at the lab — run them as distinct phases of a demo, not at the same time. Mixing them poisons the behavioural baseline.
 
-**Step 1 — baseline (`make traffic`).** Exercises all five vulnerable apps with realistic happy-path requests so the Noname engine can learn normal patterns per source. Let it run for at least 30 minutes on the first build before moving on.
+Traffic can run **locally** (requires Python/venv — Linux/macOS) or **on AWS Fargate** (platform-independent, works on Windows without WSL, runs unattended). The AWS mode is recommended for demos and for Windows users.
 
-Noname's behavioural engine learns per-source baselines from the diversity of authenticated identities, not just from raw request volume. Each authenticated User class (`VAmPIUser`, `CrAPIUser`, `JuiceShopUser`) maintains a class-level shared identity pool — instances seed the pool with fresh registrations on `on_start` and rotate through it every few tasks, registering new identities until the pool reaches `USER_POOL_SIZE` and then recycling existing entries. `HttpBinUser` and `DVGAUser` stay stateless (no auth flow to differentiate clients on). Expect a registration burst during the first 5–10 minutes of a run as the pools fill, and ~2000 user records per stateful service accumulating in the apps databases (crAPI Postgres + Mongo, VAmPI SQLite, Juice Shop SQLite) — only `make destroy` + redeploy resets them.
+#### Option A — Local (Linux/macOS)
 
 ```bash
 # Install Locust into .venv (once, after make setup)
 make traffic-install
 
-# Run headless baseline traffic — Ctrl+C to stop
+# Headless baseline traffic — Ctrl+C to stop
 make traffic
 
-# Or launch the Locust web UI at http://localhost:8089 for interactive control
+# Web UI at http://localhost:8089
 make traffic-ui
 
-# Tune volume (defaults are 50 users / 5 spawn-rate)
+# Tune volume (defaults: 50 users / 5 spawn-rate)
 TRAFFIC_USERS=100 TRAFFIC_RATE=10 make traffic
-
-# Identity pooling — at default settings (USER_POOL_SIZE=2000, IDENTITY_ROTATION_INTERVAL=5,
-# per-class seeds VAMPI=200/CRAPI=400/JUICESHOP=200) all three authenticated pools cap within
-# ~8 min at TRAFFIC_USERS=50 (VAmPI in under a minute, Juice Shop at ~3 min, crAPI at ~8 min).
-# CRAPI is highest because it has the fewest spawned instances (weight=1 vs 2 for the others).
-USER_POOL_SIZE=2000 USER_POOL_SEED_PER_INSTANCE_VAMPI=200 USER_POOL_SEED_PER_INSTANCE_CRAPI=400 USER_POOL_SEED_PER_INSTANCE_JUICESHOP=200 IDENTITY_ROTATION_INTERVAL=5 make traffic
 ```
 
-**Step 2 — OWASP API Top 10 attacks (`make traffic-owasp`).** Once the baseline has trained, fire attacks across the same gateways so Noname's Issues tab populates with detection events. Five attacker classes, one per app:
+#### Option B — AWS Fargate (platform-independent)
+
+Each `make traffic-aws` launch creates N independent Fargate tasks (default 10), each with its own ENI and private IP. This provides genuine network-level IP diversity in addition to the `X-Forwarded-For` consumer IP injection described below.
+
+```bash
+# Build and push the Locust image to ECR (once per lab, requires Docker)
+# Prerequisite: make apply-ecr (already done if you ran make deploy)
+make traffic-aws-build
+
+# Launch 10 Fargate tasks (5 users each = 50 total) — runs unattended
+make traffic-aws
+
+# Tail CloudWatch logs from running tasks
+make traffic-aws-logs
+
+# Stop all running tasks
+make traffic-aws-stop
+
+# Tune task count and users per task
+TRAFFIC_AWS_TASKS=20 TRAFFIC_AWS_USERS=10 make traffic-aws
+```
+
+#### Consumer IP diversity
+
+Both local and Fargate modes inject a rotating `X-Forwarded-For` header on every request. Each Locust user instance picks one fake source IP from a pool of 10 RFC 1918 addresses (`10.20.x.y`) and sends it as XFF. The Kong and NGINX ALBs append the real sender IP after the injected value; Noname reads the **first** (leftmost) XFF entry as the original consumer IP — so the engine records 10+ distinct source IPs across all workers, not just the runner's IP. API Gateway traffic is unaffected (`$context.identity.sourceIp` is the actual socket IP; JuiceShop IP diversity relies on user-identity tokens only).
+
+Configure the pool size with `N_CONSUMER_IPS=<n>` (default 10).
+
+#### Identity pooling (baseline only)
+
+Noname's behavioural engine learns per-source baselines from the diversity of authenticated identities, not just from raw request volume. Each authenticated User class (`VAmPIUser`, `CrAPIUser`, `JuiceShopUser`) maintains a class-level shared identity pool — instances seed the pool with fresh registrations on `on_start` and rotate through it every few tasks, registering new identities until the pool reaches `USER_POOL_SIZE` and then recycling existing entries. `HttpBinUser` and `DVGAUser` stay stateless. Expect a registration burst during the first 5–10 minutes of a run as the pools fill, and ~2000 user records per stateful service accumulating in the apps databases (crAPI Postgres + Mongo, VAmPI SQLite, Juice Shop SQLite) — only `make destroy` + redeploy resets them.
+
+At default settings (`USER_POOL_SIZE=2000`, `IDENTITY_ROTATION_INTERVAL=5`, per-class seeds `VAMPI=200`/`CRAPI=400`/`JUICESHOP=200`) all three authenticated pools cap within ~8 min at `TRAFFIC_USERS=50`. Override any tunable as an env-var prefix:
+
+```bash
+USER_POOL_SIZE=2000 USER_POOL_SEED_PER_INSTANCE_VAMPI=200 \
+USER_POOL_SEED_PER_INSTANCE_CRAPI=400 \
+USER_POOL_SEED_PER_INSTANCE_JUICESHOP=200 \
+IDENTITY_ROTATION_INTERVAL=5 make traffic
+```
+
+**Step 2 — OWASP API Top 10 attacks.** Once the baseline has trained (~30 min), fire attacks across the same gateways so Noname's Issues tab populates with detection events. Five attacker classes, one per app:
+
+```bash
+# Local
+make traffic-owasp
+make traffic-owasp-ui          # web UI variant at http://localhost:8089
+ATTACK_USERS=20 ATTACK_RATE=4 make traffic-owasp
+
+# AWS Fargate (uses same task definition as baseline — override via container command)
+make traffic-owasp-aws
+ATTACK_AWS_TASKS=10 ATTACK_AWS_USERS=5 make traffic-owasp-aws
+make traffic-aws-stop          # stops baseline and attack tasks (same family)
+```
+
+**Attack coverage** — five attacker classes, one per app:
 
 | Attacker | Gateway | OWASP focus |
 |---|---|---|
@@ -327,18 +379,7 @@ USER_POOL_SIZE=2000 USER_POOL_SEED_PER_INSTANCE_VAMPI=200 USER_POOL_SEED_PER_INS
 
 Coverage spans 9 of the 10 OWASP API Security 2023 categories. **API6** (Unrestricted Access to Sensitive Business Flows) and **API10** (Unsafe Consumption of APIs) are out of scope for this lab.
 
-```bash
-# Headless attack run — Ctrl+C to stop
-make traffic-owasp
-
-# Web UI variant at http://localhost:8089 — interactive control over which classes fire
-make traffic-owasp-ui
-
-# Tune volume (defaults are 10 users / 2 spawn — intentionally lower than baseline)
-ATTACK_USERS=20 ATTACK_RATE=4 make traffic-owasp
-```
-
-In the Noname UI, watch the **Issues** / **Runtime** tab on `lab-kong`, `lab-nginx`, and `lab-api-gateway` while the run progresses — BOLA walks, credential stuffing, and SQL injection are typically the first patterns to surface. Every attack task wraps `catch_response` and accepts the full 200–503 range as success, so locust's stats stay focused on network reachability rather than the HTTP errors the gateway/app correctly returns.
+In the Noname UI, watch the **Issues** / **Runtime** tab on `lab-kong`, `lab-nginx`, and `lab-api-gateway` while the attack run progresses — BOLA walks, credential stuffing, and SQL injection are typically the first patterns to surface. Every attack task wraps `catch_response` and accepts the full 200–503 range as success, so Locust's stats stay focused on network reachability rather than the HTTP errors the gateway/app correctly returns.
 
 ---
 
@@ -352,7 +393,7 @@ All traffic should go through the gateway URLs — not directly to the apps — 
 | Pixi (go-httpbin) | Kong | `/pixi/` | Stateless httpbin API. No auth required. Good for basic request/response exploration. |
 | VAmPI | NGINX | `/vampi/` | Flask REST API with SQLite. OWASP API Top 10 vulnerabilities. Must run `createdb` first. |
 | DVGA | NGINX | `/dvga/` | Flask + Graphene GraphQL API. Endpoint at `/dvga/graphql`. Vulnerable to introspection and injection. |
-| Juice Shop | API Gateway | `/shop/` | OWASP Juice Shop. Reached via AWS API Gateway HTTP API → VPC Link → apps ALB. Coverage provided via CloudWatch → Kinesis → Noname Forwarder Lambda (`lab-api-gateway`). |
+| Juice Shop | API Gateway | `/shop/` | OWASP Juice Shop. Reached via AWS API Gateway REST API V1 → VPC Link → internal NLB → apps EC2. Coverage via CloudWatch → Kinesis → Noname Forwarder Lambda (`lab-api-gateway`). |
 
 ### VAmPI — initialize database
 
@@ -460,8 +501,9 @@ Destroys all AWS resources (VPC, ECS cluster, EC2 instances, ALBs, ECR repos, SS
 After destroy, clean up local Terraform cache if desired:
 
 ```bash
-make clean                           # removes .venv and terraform/.terraform
-rm -f terraform/plugin.auto.tfvars  # remove ECR URIs (gitignored, safe to delete)
+make clean                            # removes .venv and terraform/.terraform
+rm -f terraform/plugin.auto.tfvars   # remove plugin ECR URIs (gitignored, safe to delete)
+rm -f terraform/traffic.auto.tfvars  # remove traffic ECR URI (gitignored, safe to delete)
 ```
 
 Keep `keys/lab_key` and `~/.vault_pass` — you will need them if you redeploy.
@@ -485,7 +527,8 @@ make apply             # Phase 4, step 2
 make provision-plugins # Phase 4, step 3
 make apply             # Phase 4, step 4
 make verify            # Phase 5 — smoke-test all routes
-# Then Phase 6 traffic
+make traffic-aws-build # Phase 6 (Fargate) — rebuilds traffic ECR repo and image
+# Then Phase 6 traffic (local or Fargate)
 ```
 
 ---
@@ -502,6 +545,9 @@ make verify            # Phase 5 — smoke-test all routes
 | NGINX returns 502 for `/vampi/*` or `/dvga/*` with `connect() failed (113: No route to host)` in the NGINX logs | Stale apps-ALB IP cached by NGINX after AWS rotated an ALB node | Self-heals within ~10 s thanks to the runtime resolver in `docker/nginx/nginx.conf.template` (variable-based `proxy_pass` + `resolver … valid=10s`). If it persists, the resolver directive or the `set $apps_alb` line was removed — restore them and rebuild the NGINX image. |
 | `/shop/*` returns `403 Forbidden` or `503` from API Gateway | VPC Link not yet healthy or security group rule missing between VPC Link SG and apps ALB SG | Check `aws apigatewayv2 get-vpc-links` for `AVAILABLE` status; verify the `aws_security_group_rule.apps_alb_from_api_gw` rule was applied (`make apply`) |
 | `lab-api-gateway` stays `PENDING` in Noname UI | CloudWatch subscription filter not yet delivering to Kinesis, or KMS permissions missing on the CW→Kinesis IAM role | Verify `aws cloudwatch describe-subscription-filters` for the API GW log group; check IAM role has `kms:GenerateDataKey` on the Kinesis stream's KMS key |
+| `make traffic-aws` fails with "task definition not found" | `traffic-aws-build` hasn't been run yet, or ECR URI in `traffic.auto.tfvars` is stale after a `make destroy` | Run `make traffic-aws-build` (requires `make apply-ecr` first if ECR repo was destroyed) |
+| `make traffic-aws-logs` returns "log group does not exist" | CloudWatch log group created on first task launch; group exists but no tasks have run yet, or `_tf_outputs` read stale state | Run `make traffic-aws` first; if group still missing run `make apply` |
+| Fargate tasks launch but show no traffic in Noname | Tasks use NAT gateway → all tasks share the same egress IP; XFF injection is working but Kong/NGINX SG is blocking the NAT GW IP | ECS SG egress is `0.0.0.0/0`; ALB SG ingress allows all HTTP — traffic should flow. Check `make traffic-aws-logs` for Locust errors |
 | `docker: permission denied` | Docker group not active in current shell | Log out and back in, or run `newgrp docker` |
 | `make provision-plugins` runs but Kong still has 0 routes | Ran `make provision-plugins` from wrong directory causing bad terraform output | Run directly from the repo root; the Makefile handles the `cd terraform` internally |
 
