@@ -16,10 +16,11 @@ AWS_REGION    ?= us-east-2
 PROJECT_NAME  ?= akamai-lab
 TRAFFIC_DIR   := scripts/traffic
 LOCUST        := $(VENV_ABS)/bin/locust
-TRAFFIC_USERS ?= 50
-TRAFFIC_RATE  ?= 5
-ATTACK_USERS  ?= 10
-ATTACK_RATE   ?= 2
+TRAFFIC_USERS    ?= 50
+TRAFFIC_RATE     ?= 5
+ATTACK_USERS     ?= 10
+ATTACK_RATE      ?= 2
+N_CONSUMER_IPS   ?= 10
 
 .DEFAULT_GOAL := help
 .PHONY: help setup install-terraform keys configure init plan apply provision provision-check deploy \
@@ -231,7 +232,7 @@ traffic: _tf_outputs ## Run headless traffic generator against lab APIs (Ctrl+C 
 	# NOTE: --host is intentionally omitted. Locust's CLI --host overrides the
 	# per-User host= attribute (Kong / NGINX / API Gateway), which sends every
 	# request to the same gateway and produces 100% 404s on the wrong routes.
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
+	N_CONSUMER_IPS=$(N_CONSUMER_IPS) KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/locustfile.py \
 	  --users $(TRAFFIC_USERS) \
@@ -240,7 +241,7 @@ traffic: _tf_outputs ## Run headless traffic generator against lab APIs (Ctrl+C 
 	  --exit-code-on-error 0
 
 traffic-ui: _tf_outputs ## Launch Locust web UI at http://localhost:8089
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
+	N_CONSUMER_IPS=$(N_CONSUMER_IPS) KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/locustfile.py
 
@@ -251,7 +252,7 @@ traffic-owasp: _tf_outputs ## Run OWASP API Top 10 attacks against the lab APIs 
 	# has built a behavioural baseline (~30 min) so attacks show as anomalies
 	# rather than seeded normal patterns. Like 'make traffic', --host is
 	# omitted so the per-User host attribute is honoured.
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
+	N_CONSUMER_IPS=$(N_CONSUMER_IPS) KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/attackfile.py \
 	  --users $(ATTACK_USERS) \
@@ -260,6 +261,6 @@ traffic-owasp: _tf_outputs ## Run OWASP API Top 10 attacks against the lab APIs 
 	  --exit-code-on-error 0
 
 traffic-owasp-ui: _tf_outputs ## Launch Locust web UI for the OWASP attack file at http://localhost:8089
-	KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
+	N_CONSUMER_IPS=$(N_CONSUMER_IPS) KONG_ALB_DNS=$(KONG_ALB_DNS) NGINX_ALB_DNS=$(NGINX_ALB_DNS) API_GW_URL=$(API_GW_URL) \
 	$(LOCUST) \
 	  --locustfile $(TRAFFIC_DIR)/attackfile.py

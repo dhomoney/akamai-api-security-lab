@@ -39,6 +39,11 @@ KONG_BASE = f"http://{KONG_ALB_DNS}"
 NGINX_BASE = f"http://{NGINX_ALB_DNS}"
 API_GW_BASE = API_GW_URL if API_GW_URL else None
 
+# Consumer IP pool — each attacker instance is assigned one fake source IP.
+# Same mechanism as locustfile.py: ALB prepends real IP, Noname reads first XFF entry.
+_N_CONSUMER_IPS = int(os.environ.get("N_CONSUMER_IPS", "10"))
+_CONSUMER_IP_POOL = [f"10.20.{i // 5 + 1}.{(i % 5) * 20 + 10}" for i in range(_N_CONSUMER_IPS)]
+
 # Attacks deliberately produce 4xx/5xx — we don't want locust treating those
 # as failures and polluting the stats. This tuple covers everything from
 # "auth rejected" (401/403) through "input rejected" (400/422) to "server
@@ -110,6 +115,7 @@ class CrAPIAttacker(FastHttpUser):
     connection_timeout = 20.0
 
     def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
         # Register a low-privilege user — we'll use this token to attempt
         # privileged actions and access other users' data.
         self.email = f"attacker_{uid()}@lab.test"
@@ -233,6 +239,9 @@ class VAmPIAttacker(FastHttpUser):
     network_timeout = 20.0
     connection_timeout = 20.0
 
+    def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
+
     @task(4)
     def api2_sqli_login(self):
         with self.client.post("/vampi/users/v1/login",
@@ -294,6 +303,9 @@ class DVGAAttacker(FastHttpUser):
     host = NGINX_BASE
     weight = 1
     wait_time = between(1, 3)
+
+    def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
 
     @task(3)
     def api8_introspection(self):
@@ -364,6 +376,9 @@ class JuiceShopAttacker(FastHttpUser):
     abstract = True
     weight = 3
     wait_time = between(0.5, 2)
+
+    def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
 
     @task(5)
     def api2_sqli_login(self):
@@ -500,6 +515,9 @@ class PixiAttacker(FastHttpUser):
     wait_time = between(1, 3)
     network_timeout = 15.0   # pixi/delay/10 takes 10 s by design
     connection_timeout = 15.0
+
+    def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
 
     @task(3)
     def api4_oversized_payload(self):

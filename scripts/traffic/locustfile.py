@@ -15,6 +15,16 @@ KONG_BASE = f"http://{KONG_ALB_DNS}"
 NGINX_BASE = f"http://{NGINX_ALB_DNS}"
 API_GW_BASE = API_GW_URL if API_GW_URL else None
 
+# ─── Consumer IP pool ─────────────────────────────────────────────────────────
+#
+# Each Locust worker instance is assigned one fake source IP so Noname sees 10+
+# distinct consumer IPs rather than a single runner IP. The ALB prepends the
+# real runner IP after our injected value; Noname reads the first (leftmost)
+# entry in X-Forwarded-For as the original consumer IP.
+# Override pool size with N_CONSUMER_IPS=<n>.
+_N_CONSUMER_IPS = int(os.environ.get("N_CONSUMER_IPS", "10"))
+_CONSUMER_IP_POOL = [f"10.20.{i // 5 + 1}.{(i % 5) * 20 + 10}" for i in range(_N_CONSUMER_IPS)]
+
 # ─── Identity pooling ────────────────────────────────────────────────────────
 #
 # Noname's behavioural engine learns per-source baselines from the diversity
@@ -80,6 +90,9 @@ class HttpBinUser(FastHttpUser):
     weight = 3
     wait_time = between(0.5, 2)
 
+    def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
+
     @task(5)
     def get_get(self):
         self.client.get("/pixi/get")
@@ -140,6 +153,7 @@ class VAmPIUser(FastHttpUser):
     _db_initialized = False
 
     def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
         if not VAmPIUser._db_initialized:
             # VAmPI ships with empty SQLite — /createdb seeds the users/books
             # tables. Without this, every other call returns 500 ("no such
@@ -283,6 +297,9 @@ class DVGAUser(FastHttpUser):
     weight = 2
     wait_time = between(0.5, 2)
 
+    def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
+
     @task(4)
     def query_pastes(self):
         with self.client.post("/dvga/graphql",
@@ -336,6 +353,7 @@ class CrAPIUser(FastHttpUser):
     _identity_pool = []
 
     def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
         for _ in range(USER_POOL_SEED_PER_INSTANCE_CRAPI):
             if len(CrAPIUser._identity_pool) >= USER_POOL_SIZE:
                 break
@@ -458,6 +476,7 @@ class JuiceShopUser(FastHttpUser):
     _identity_pool = []
 
     def on_start(self):
+        self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
         for _ in range(USER_POOL_SEED_PER_INSTANCE_JUICESHOP):
             if len(JuiceShopUser._identity_pool) >= USER_POOL_SIZE:
                 break
