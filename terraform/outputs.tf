@@ -68,6 +68,11 @@ output "traffic_task_def_arn" {
   value       = module.traffic_generator.task_definition_arn
 }
 
+output "traffic_log_group" {
+  description = "CloudWatch log group name for Fargate traffic tasks"
+  value       = module.traffic_generator.log_group_name
+}
+
 output "private_subnet_ids_csv" {
   description = "Private subnet IDs as comma-separated string (for aws ecs run-task)"
   value       = join(",", module.vpc.private_subnet_ids)

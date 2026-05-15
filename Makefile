@@ -105,6 +105,7 @@ _tf_outputs:
 	$(eval TRAFFIC_TASK_DEF_ARN := $(shell cd $(TF_DIR) && terraform output -raw traffic_task_def_arn 2>/dev/null))
 	$(eval PRIVATE_SUBNETS_CSV  := $(shell cd $(TF_DIR) && terraform output -raw private_subnet_ids_csv 2>/dev/null))
 	$(eval ECS_SG_ID            := $(shell cd $(TF_DIR) && terraform output -raw ecs_sg_id 2>/dev/null))
+	$(eval TRAFFIC_LOG_GROUP    := $(shell cd $(TF_DIR) && terraform output -raw traffic_log_group 2>/dev/null))
 	@if [ -z "$(BASTION_IP)" ]; then \
 		echo "ERROR: Could not read Terraform outputs. Run 'make apply' first."; exit 1; fi
 
@@ -311,8 +312,9 @@ traffic-aws: _tf_outputs ## Run baseline traffic on ECS Fargate (TRAFFIC_AWS_TAS
 	@echo "Started. Run 'make traffic-aws-logs' to watch or 'make traffic-aws-stop' to halt."
 
 traffic-aws-stop: _tf_outputs ## Stop all running Fargate traffic generator tasks
+	$(eval TRAFFIC_FAMILY := $(shell echo "$(TRAFFIC_TASK_DEF_ARN)" | sed 's|.*/||' | cut -d: -f1))
 	$(eval RUNNING_TASKS := $(shell aws ecs list-tasks --cluster $(ECS_CLUSTER) \
-	  --family $(PROJECT_NAME)-traffic --desired-status RUNNING \
+	  --family $(TRAFFIC_FAMILY) --desired-status RUNNING \
 	  --profile $(AWS_PROFILE) --region $(AWS_REGION) \
 	  --output text --query 'taskArns' 2>/dev/null))
 	@if [ -z "$(RUNNING_TASKS)" ]; then echo "No running traffic tasks."; exit 0; fi
@@ -323,8 +325,8 @@ traffic-aws-stop: _tf_outputs ## Stop all running Fargate traffic generator task
 	done
 	@echo "Stopped all running traffic tasks."
 
-traffic-aws-logs: ## Tail CloudWatch logs from Fargate traffic tasks (Ctrl+C to stop)
-	aws logs tail /ecs/$(PROJECT_NAME)/traffic --follow \
+traffic-aws-logs: _tf_outputs ## Tail CloudWatch logs from Fargate traffic tasks (Ctrl+C to stop)
+	aws logs tail $(TRAFFIC_LOG_GROUP) --follow \
 	  --profile $(AWS_PROFILE) --region $(AWS_REGION)
 
 traffic-owasp-aws: _tf_outputs ## Run OWASP attacks on ECS Fargate (ATTACK_AWS_TASKS tasks × ATTACK_AWS_USERS users each)
