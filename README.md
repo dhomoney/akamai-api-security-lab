@@ -371,13 +371,15 @@ make traffic-aws-stop          # stops baseline and attack tasks (same family)
 
 | Attacker | Gateway | OWASP focus |
 |---|---|---|
-| `CrAPIAttacker` | Kong `/crapi/` | API1 BOLA on user/profile and orders, API2 credential stuffing, API3 mass-assignment signup, API5 BFLA on `/workshop/api/management/*`, API7 SSRF via `contact_mechanic.mechanic_api`, API9 inventory probing on `/v1/` |
-| `VAmPIAttacker` | NGINX `/vampi/` | API2 SQL injection on `/users/v1/login`, API1 BOLA on `/users/v1/{username}`, API5 BFLA on `/_debug`, API3 mass-assignment register |
-| `DVGAAttacker` | NGINX `/dvga/` | API8 schema introspection, API4 deeply-nested resolver DoS, API2 batched login mutation stuffing, API3 BOPLA via `createPaste.ownerId`, API1 paste-id walking |
-| `JuiceShopAttacker` | API Gateway `/shop/` | API2 `' OR 1=1--` login SQLi, API1 BOLA on `Users/{id}` and `basket/{id}`, API3 role=admin mass assignment on register, API5 BFLA on `/authentication-details`, API7 SSRF via `/profile/image/url`, API8 `/api-docs` recon, API9 path traversal on `/shop/ftp/...`, XSS in feedback comments |
+| `CrAPIAttacker` | Kong `/crapi/` | API1 BOLA on user/profile and orders (authenticated), API2 credential stuffing, API3 mass-assignment signup, API5 BFLA on `/workshop/api/management/*`, API6 repeated coupon redemption via `/coupon/validate-coupon`, API7 SSRF via `contact_mechanic.mechanic_api`, API9 inventory probing on `/v1/` |
+| `VAmPIAttacker` | NGINX `/vampi/` | API1 BOLA on `/users/v1/{username}` and `/books/v1/{title}` (authenticated — registers attacker user in `on_start()`), API2 SQL injection + credential stuffing on `/users/v1/login`, API3 mass-assignment register with `admin:true`, API5 BFLA on `/_debug` |
+| `DVGAAttacker` | NGINX `/dvga/` | API1 paste-id walking, API2 batched login mutation stuffing, API3 BOPLA via `createPaste.ownerId`, API4 deeply-nested resolver DoS, API8 schema introspection |
+| `JuiceShopAttacker` | API Gateway `/shop/` | API1 BOLA on `Users/{id}` and `basket/{id}` (authenticated — registers attacker user in `on_start()`), API2 `' OR 1=1--` login SQLi + credential stuffing, API3 role=admin mass assignment, API5 BFLA on `/authentication-details`, API6 coupon code abuse + rapid order placement, API7 SSRF via `/profile/image/url`, API8 `/api-docs` recon, API9 path traversal on `/shop/ftp/...`, XSS in feedback comments |
 | `PixiAttacker` | Kong `/pixi/` | API4 256 KB oversized POST and `/pixi/delay/10` worker tie-up, API8 method bypass (TRACE/OPTIONS/PATCH on `/anything/admin`), header smuggling on `/pixi/headers` |
 
-Coverage spans 9 of the 10 OWASP API Security 2023 categories. **API6** (Unrestricted Access to Sensitive Business Flows) and **API10** (Unsafe Consumption of APIs) are out of scope for this lab.
+Coverage spans **9 of the 10** OWASP API Security 2023 categories (API1–API9). **API10** (Unsafe Consumption of APIs) is out of scope for this lab.
+
+> **BOLA requires authenticated context.** `VAmPIAttacker` and `JuiceShopAttacker` each register a fresh attacker user and obtain a Bearer token during `on_start()`. All API1 tasks carry that token so Noname sees an authenticated identity walking resources owned by a different user — the engine's definition of BOLA. Without the auth header, the engine classifies the requests as anonymous enumeration instead.
 
 In the Noname UI, watch the **Issues** / **Runtime** tab on `lab-kong`, `lab-nginx`, and `lab-api-gateway` while the attack run progresses — BOLA walks, credential stuffing, and SQL injection are typically the first patterns to surface. Every attack task wraps `catch_response` and accepts the full 200–503 range as success, so Locust's stats stay focused on network reachability rather than the HTTP errors the gateway/app correctly returns.
 
